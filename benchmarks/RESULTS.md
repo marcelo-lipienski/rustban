@@ -8,10 +8,10 @@ Reproducible head-to-head benchmark comparing **`rustban`** (release build compi
 
 | Property | Value |
 |---|---|
-| **Date (UTC)** | `2026-11-27T02:58:25Z` |
-| **Host CPU** | `11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz` (8 vCPUs, `x86_64`) |
-| **Linux Kernel** | `6.17.0-40-generic` |
-| **Container Runtime** | Docker `29.6.1` (`--cap-add=NET_ADMIN`, `debian:bookworm-slim`) |
+| **Date (UTC)** | `2026-11-27T03:59:53Z` |
+| **Host CPU** | `AMD EPYC 9V45 96-Core Processor` (4 vCPUs, `x86_64`) |
+| **Linux Kernel** | `7.0.0-1020-azure` |
+| **Container Runtime** | Docker `29.4.2` (`--cap-add=NET_ADMIN`, `debian:bookworm-slim`) |
 | **`rustban`** | `rustban 0.1.0` (`nftables v1.0.6 (Lester Gooch #5)`) |
 | **`fail2ban`** | `Fail2Ban v1.0.2 (Python 3.11.2)` (`nftables v1.0.6 (Lester Gooch #5)`) |
 
@@ -28,55 +28,55 @@ Reproducible head-to-head benchmark comparing **`rustban`** (release build compi
 
 | Benchmark | Metric | `rustban` | `fail2ban` | Advantage (`rustban` vs `fail2ban`) |
 |---|---|---:|---:|---|
-| **Disk / Binary** | Binary vs package footprint | 2.13 MiB | 22.84 MiB | **10.7x smaller** |
-| **Container Image** | Minimal runtime Docker image | 84.01 MiB | 118.81 MiB | **1.4x smaller** |
-| **Cold Startup** | Median boot-to-ready (5 runs) | 13.37 ms | 185.22 ms | **13.9x faster / lower** |
-| **Idle Memory** | Steady RSS (`VmRSS`) | 4.17 MiB | 17.70 MiB | **4.2x less RAM** |
-| **Single-IP Ban Latency** | p50 detection → kernel `nft` (20 trials) | 12.32 ms | 153.11 ms | **12.4x faster / lower** |
-| **Single-IP Ban Latency** | p95 detection → kernel `nft` (20 trials) | 15.74 ms | 155.22 ms | **9.9x faster / lower** |
-| **100k Noise Ingestion** | Live throughput | 2,753,078 lines/s | 53,209 lines/s | **51.7x higher** |
-| **100k Noise Ingestion** | Wall time / Peak RSS | 0.036s / 4.29 MiB | 1.879s / 19.37 MiB | **51.8x faster / lower** |
-| **200-Ban Attack Burst** | Wall time (200 real `nft` bans + 5k scanners + 10k noise) | 0.027s (7477.3 bans/s) | 1.024s (195.4 bans/s) | **38.3x faster / lower** |
-| **200-Ban Attack Burst** | Total CPU (daemon + `nft` children) | 20 ms | 1120 ms | **56.0x faster / lower** |
-| **200-Ban Attack Burst** | Peak RSS (`VmHWM`) | 6.00 MiB | 25.97 MiB | **4.3x less RAM** |
-| **CLI Status (201 bans)** | Median `status` query latency (10 runs) | 3.79 ms | 44.5 ms | **11.7x faster / lower** |
-| **50k Spoofed-IP Flood** | Wall time (50k unique IPs × 1 failure) | 0.168s (297,634 IPs/s) | 2.651s (18,864 IPs/s) | **15.8x faster / lower** |
-| **50k Spoofed-IP Flood** | Peak RSS (`VmHWM`) | 13.00 MiB | 69.27 MiB | **5.3x less RAM** |
-| **100-Ban Expiration (5s TTL)** | Userspace + child CPU during expiration | 0.0 ms | 380.0 ms | ∞ (0 ms) |
-| **Offline Regex (100k lines)** | `rustban test` vs `fail2ban-regex` (10k matches) | 0.043s (2,336,449 lines/s) | 1.854s (53,932 lines/s) | **43.3x higher** |
+| **Disk / Binary** | Binary vs package footprint | 2.19 MiB | 22.84 MiB | **10.5x smaller** |
+| **Container Image** | Minimal runtime Docker image | 31.67 MiB | 43.37 MiB | **1.4x smaller** |
+| **Cold Startup** | Median boot-to-ready (5 runs) | 9.49 ms | 126.68 ms | **13.3x faster / lower** |
+| **Idle Memory** | Steady RSS (`VmRSS`) | 4.29 MiB | 17.67 MiB | **4.1x less RAM** |
+| **Single-IP Ban Latency** | p50 detection → kernel `nft` (20 trials) | 6.48 ms | 154.2 ms | **23.8x faster / lower** |
+| **Single-IP Ban Latency** | p95 detection → kernel `nft` (20 trials) | 9.94 ms | 155.41 ms | **15.6x faster / lower** |
+| **100k Noise Ingestion** | Live throughput | 3,792,261 lines/s | 92,833 lines/s | **40.9x higher** |
+| **100k Noise Ingestion** | Wall time / Peak RSS | 0.026s / 4.57 MiB | 1.077s / 19.45 MiB | **40.8x faster / lower** |
+| **200-Ban Attack Burst** | Wall time (200 real `nft` bans + 5k scanners + 10k noise) | 0.027s (7480.5 bans/s) | 1.251s (159.9 bans/s) | **46.9x faster / lower** |
+| **200-Ban Attack Burst** | Total CPU (daemon + `nft` children) | 10 ms | 1340 ms | **134.0x faster / lower** |
+| **200-Ban Attack Burst** | Peak RSS (`VmHWM`) | 5.95 MiB | 26.38 MiB | **4.4x less RAM** |
+| **CLI Status (201 bans)** | Median `status` query latency (10 runs) | 4.03 ms | 38.18 ms | **9.5x faster / lower** |
+| **50k Spoofed-IP Flood** | Wall time (50k unique IPs × 1 failure) | 0.150s (332,336 IPs/s) | 1.511s (33,096 IPs/s) | **10.0x faster / lower** |
+| **50k Spoofed-IP Flood** | Peak RSS (`VmHWM`) | 13.12 MiB | 71.35 MiB | **5.4x less RAM** |
+| **100-Ban Expiration (5s TTL)** | Userspace + child CPU during expiration | 0.0 ms | 410.0 ms | ∞ (0 ms) |
+| **Offline Regex (100k lines)** | `rustban test` vs `fail2ban-regex` (10k matches) | 0.030s (3,278,688 lines/s) | 1.186s (84,324 lines/s) | **38.9x higher** |
 
 ---
 
 ## Detailed Breakdown
 
 ### 1. Startup & Idle Footprint
-- **`rustban`**: `2.13 MiB` stripped static-ish Rust binary, `13.37 ms` median cold start, `4.17 MiB` RSS (`3.42 MiB` PSS), `3` OS threads.
-- **`fail2ban`**: `22.84 MiB` installed package footprint (fail2ban + Python 3.11 + pyinotify), `185.22 ms` median cold start, `17.70 MiB` RSS (`15.04 MiB` PSS), `5` OS threads.
+- **`rustban`**: `2.19 MiB` stripped static-ish Rust binary, `9.49 ms` median cold start, `4.29 MiB` RSS (`3.54 MiB` PSS), `3` OS threads.
+- **`fail2ban`**: `22.84 MiB` installed package footprint (fail2ban + Python 3.11 + pyinotify), `126.68 ms` median cold start, `17.67 MiB` RSS (`15.11 MiB` PSS), `5` OS threads.
 
 ### 2. Single-IP Detection-to-Kernel-Ban Latency (20 live trials)
 Time from writing 3 matching auth-failure log lines until the attacker IP is actively enforced inside the Linux kernel `nftables` set:
-- **`rustban`**: min `8.03 ms`, p50 `12.32 ms`, mean `12.06 ms`, p95 `15.74 ms`, max `17.04 ms`.
-- **`fail2ban`**: min `151.07 ms`, p50 `153.11 ms`, mean `165.71 ms`, p95 `155.22 ms`, max `404.11 ms`.
+- **`rustban`**: min `5.13 ms`, p50 `6.48 ms`, mean `7.57 ms`, p95 `9.94 ms`, max `11.8 ms`.
+- **`fail2ban`**: min `152.06 ms`, p50 `154.2 ms`, mean `166.44 ms`, p95 `155.41 ms`, max `401.41 ms`.
 
 ### 3. High-Volume Noise Log Ingestion (100,000 non-matching lines + 1 sentinel ban)
-- **`rustban`**: `0.036s` (`2,753,078 lines/s`), daemon CPU `40.0 ms`, child CPU `0.0 ms`, peak RSS `4.29 MiB`.
-- **`fail2ban`**: `1.879s` (`53,209 lines/s`), daemon CPU `1400.0 ms`, child CPU `0.0 ms`, peak RSS `19.37 MiB`.
+- **`rustban`**: `0.026s` (`3,792,261 lines/s`), daemon CPU `30.0 ms`, child CPU `0.0 ms`, peak RSS `4.57 MiB`.
+- **`fail2ban`**: `1.077s` (`92,833 lines/s`), daemon CPU `1070.0 ms`, child CPU `10.0 ms`, peak RSS `19.45 MiB`.
 
 ### 4. Distributed Attack Burst (200 real `nftables` bans + 5,000 scanners + 10,000 noise lines)
-- **`rustban`**: `0.027s` (`7477.3 bans/s`), daemon CPU `20.0 ms`, child (`nft`) CPU `0.0 ms`, total CPU `20.0 ms`, peak RSS `6.00 MiB`, steady RSS `6.00 MiB`.
-- **`fail2ban`**: `1.024s` (`195.4 bans/s`), daemon CPU `640.0 ms`, child (`sh`/`nft`) CPU `480.0 ms`, total CPU `1120.0 ms`, peak RSS `25.97 MiB`, steady RSS `25.97 MiB`.
+- **`rustban`**: `0.027s` (`7480.5 bans/s`), daemon CPU `10.0 ms`, child (`nft`) CPU `0.0 ms`, total CPU `10.0 ms`, peak RSS `5.95 MiB`, steady RSS `5.95 MiB`.
+- **`fail2ban`**: `1.251s` (`159.9 bans/s`), daemon CPU `660.0 ms`, child (`sh`/`nft`) CPU `680.0 ms`, total CPU `1340.0 ms`, peak RSS `26.38 MiB`, steady RSS `26.38 MiB`.
 - *Note*: `rustban` drains queued events and coalesces concurrent bans into atomic batched `nft -f -` transactions, amortizing Linux kernel `nf_tables` netlink commit overhead across bursts while preserving immediate single-IP flush latency.
 
 ### 5. High-Cardinality Spoofed-IP Flood (50,000 unique IPs × 1 failure + 1 sentinel ban)
 Tests memory bounding and tracking overhead under distributed botnet credential stuffing where IPs do not reach `max_retries`:
-- **`rustban`**: `0.168s` (`297,634 unique IPs/s`), daemon CPU `220.0 ms`, peak RSS `13.00 MiB`.
-- **`fail2ban`**: `2.651s` (`18,864 unique IPs/s`), daemon CPU `2390.0 ms`, peak RSS `69.27 MiB`.
+- **`rustban`**: `0.150s` (`332,336 unique IPs/s`), daemon CPU `210.0 ms`, peak RSS `13.12 MiB`.
+- **`fail2ban`**: `1.511s` (`33,096 unique IPs/s`), daemon CPU `1470.0 ms`, peak RSS `71.35 MiB`.
 
 ### 6. Ban Expiration Overhead (100 active bans × 5s TTL)
 Directly tests `rustban`'s core thesis — offloading ban expiration to the Linux kernel via `nftables` timeout sets:
-- **`rustban`**: drained in `5.02s` with **`0.0 ms` daemon CPU** and **`0.0 ms` child (`nft`) CPU** (zero userspace wakeups, zero `nft delete element` subprocesses).
-- **`fail2ban`**: drained in `5.70s` with **`110.0 ms` daemon CPU** and **`270.0 ms` child (`sh`/`nft`) CPU** (100 userspace unban timer wakeups + 100 `nft delete element` subprocesses + SQLite updates).
+- **`rustban`**: drained in `5.03s` with **`0.0 ms` daemon CPU** and **`0.0 ms` child (`nft`) CPU** (zero userspace wakeups, zero `nft delete element` subprocesses).
+- **`fail2ban`**: drained in `4.79s` with **`120.0 ms` daemon CPU** and **`290.0 ms` child (`sh`/`nft`) CPU** (100 userspace unban timer wakeups + 100 `nft delete element` subprocesses + SQLite updates).
 
 ### 7. Offline Regex Engine (`rustban test` vs `fail2ban-regex`, 100k lines / 10k matches)
-- **`rustban test`**: median `0.043s` (`2,336,449 lines/s`, runs: `[0.047, 0.0428, 0.0401]`).
-- **`fail2ban-regex`**: median `1.854s` (`53,932 lines/s`, runs: `[1.7478, 1.8542, 2.1726]`).
+- **`rustban test`**: median `0.030s` (`3,278,688 lines/s`, runs: `[0.0305, 0.0308, 0.0297]`).
+- **`fail2ban-regex`**: median `1.186s` (`84,324 lines/s`, runs: `[1.174, 1.2014, 1.1859]`).
