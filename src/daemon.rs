@@ -21,7 +21,10 @@ struct CompiledJail {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum SourceKey {
     File(PathBuf),
-    Journald(String),
+    Journald {
+        units: Vec<String>,
+        syslog_identifier: Option<String>,
+    },
 }
 
 pub fn run_daemon(config: &Config, dry_run: bool) -> Result<(), String> {
@@ -62,7 +65,13 @@ pub fn run_daemon(config: &Config, dry_run: bool) -> Result<(), String> {
 
         let key = match &jail_cfg.source {
             LogSourceKind::File(p) => SourceKey::File(p.clone()),
-            LogSourceKind::Journald { unit } => SourceKey::Journald(unit.clone()),
+            LogSourceKind::Journald {
+                units,
+                syslog_identifier,
+            } => SourceKey::Journald {
+                units: units.clone(),
+                syslog_identifier: syslog_identifier.clone(),
+            },
         };
 
         let source_id = if let Some(&id) = source_map.get(&key) {
@@ -98,11 +107,15 @@ pub fn run_daemon(config: &Config, dry_run: bool) -> Result<(), String> {
                     Arc::clone(&shutdown),
                 ));
             }
-            SourceKey::Journald(unit) => {
+            SourceKey::Journald {
+                units,
+                syslog_identifier,
+            } => {
                 handles.push(spawn_journald_tailer(
                     source_id,
                     config.journalctl_bin.clone(),
-                    unit,
+                    units,
+                    syslog_identifier,
                     tx.clone(),
                     Arc::clone(&shutdown),
                     Arc::clone(&children),

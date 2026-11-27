@@ -372,6 +372,9 @@ assert len(d["bans"]) == 0, f"expected empty bans after unban, got: {d}"
 TEST_OUT="$(docker exec "${CONTAINER_NAME}" rustban test -c /tmp/rustban-e2e.toml /tmp/test-auth.log)"
 echo "${TEST_OUT}" | grep -q "matches=" || fail "rustban test output unexpected: ${TEST_OUT}"
 
+CHECK_OUT="$(docker exec "${CONTAINER_NAME}" rustban check -c /tmp/rustban-e2e.toml --strict)"
+echo "${CHECK_OUT}" | grep -q "Config OK:" || fail "rustban check output unexpected: ${CHECK_OUT}"
+
 docker exec "${CONTAINER_NAME}" rustban teardown >/dev/null
 docker exec "${CONTAINER_NAME}" rustban status --json | python3 -c '
 import json, sys
