@@ -19,10 +19,18 @@ fail() {
   exit 1
 }
 
-echo "==> [1/8] Compiling release mode and running Cargo release + security exploit tests inside Docker..."
+echo "==> [1/8] Compiling static musl release binary and running Cargo release + security exploit tests inside Docker..."
 docker build --target tester -t "${TESTER_IMAGE}" "${ROOT_DIR}"
 docker build --target runtime -t "${RUNTIME_IMAGE}" "${ROOT_DIR}"
 docker build --target e2e -t "${E2E_IMAGE}" "${ROOT_DIR}"
+
+echo "    Smoke-testing Alpine runtime image (${RUNTIME_IMAGE})..."
+docker run --rm --entrypoint /bin/sh "${RUNTIME_IMAGE}" -c '
+  set -e
+  /usr/local/bin/rustban --version
+  /usr/sbin/nft --version
+  /usr/local/bin/rustban check -c /etc/rustban/rustban.toml.example
+' >/dev/null || fail "Alpine runtime image smoke test failed"
 
 echo "==> [2/8] Starting isolated rustban container (CAP_NET_ADMIN) with live TCP responder..."
 docker run -d \
