@@ -44,7 +44,7 @@ jobs:
           RUSTBAN_VERSION="${RELEASE_TAG#v}" ./scripts/security-check-docker.sh --out-dir dist/security
 
       - name: Upload security report artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: security-report
           path: |
@@ -94,7 +94,7 @@ jobs:
           ls -la "${STAGE}"
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-binary
           path: dist/release-assets/
@@ -113,7 +113,7 @@ jobs:
           RUSTBAN_VERSION="${RELEASE_TAG#v}" ./scripts/bench-docker.sh
 
       - name: Upload benchmark results artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-results
           path: |
