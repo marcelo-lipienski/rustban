@@ -52,7 +52,7 @@ jobs:
             dist/security/security-report.md
 
   build-binary:
-    name: Build Linux Release Binaries (x86_64 & aarch64, gnu & static musl)
+    name: Build Static Linux Release Binaries (x86_64 & aarch64 musl)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -60,39 +60,31 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG || github.ref }}
 
-      - name: Build & extract all 4 release targets via Docker
+      - name: Build & extract static musl release targets via Docker
         run: |
           RUSTBAN_VERSION="${RELEASE_TAG#v}" ./scripts/build-docker.sh --all-targets
 
-          for target in x86_64-unknown-linux-gnu x86_64-unknown-linux-musl; do
-            BIN="dist/${target}/rustban"
-            BIN_VER="$("${BIN}" --version)"
-            echo "${target} version: ${BIN_VER}"
-            if [[ -n "${RELEASE_TAG}" ]]; then
-              EXPECTED="rustban ${RELEASE_TAG#v}"
-              if [[ "${BIN_VER}" != "${EXPECTED}" ]]; then
-                echo "ERROR: Expected '${EXPECTED}' for ${target}, got '${BIN_VER}'" >&2
-                exit 1
-              fi
+          BIN="dist/x86_64-unknown-linux-musl/rustban"
+          BIN_VER="$("${BIN}" --version)"
+          echo "x86_64-unknown-linux-musl version: ${BIN_VER}"
+          if [[ -n "${RELEASE_TAG}" ]]; then
+            EXPECTED="rustban ${RELEASE_TAG#v}"
+            if [[ "${BIN_VER}" != "${EXPECTED}" ]]; then
+              echo "ERROR: Expected '${EXPECTED}' for x86_64-unknown-linux-musl, got '${BIN_VER}'" >&2
+              exit 1
             fi
-          done
+          fi
 
-          # Verify ELF architecture and static linkage for all 4 binaries
-          for target in x86_64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-gnu aarch64-unknown-linux-musl; do
+          # Verify ELF architecture and full static linkage for both musl binaries
+          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
             INFO="$(file "dist/${target}/rustban")"
             echo "${INFO}"
             case "${target}" in
               x86_64-*-musl)
                 echo "${INFO}" | grep -qE "x86-64.*(statically linked|static-pie linked)"
                 ;;
-              x86_64-*-gnu)
-                echo "${INFO}" | grep -q "x86-64"
-                ;;
               aarch64-*-musl)
                 echo "${INFO}" | grep -qE "ARM aarch64.*(statically linked|static-pie linked)"
-                ;;
-              aarch64-*-gnu)
-                echo "${INFO}" | grep -q "ARM aarch64"
                 ;;
             esac
           done
@@ -108,7 +100,7 @@ jobs:
           STAGE="dist/release-assets"
           mkdir -p "${STAGE}"
 
-          for target in x86_64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-gnu aarch64-unknown-linux-musl; do
+          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
             PKG_DIR="dist/rustban-${TAG}-${target}"
             mkdir -p "${PKG_DIR}"
             cp "dist/${target}/rustban" "${PKG_DIR}/rustban"
