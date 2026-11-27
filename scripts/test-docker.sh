@@ -430,6 +430,25 @@ assert matches[0]['timeout_secs'] == ${expected_ttl}, f'expected escalated timeo
 done
 echo "    Verified progressive ban escalation in kernel nftables: 5s -> 10s -> 20s (capped)"
 
+# Verify Prometheus exposition output from CLI status
+PROM_OUT="$(docker exec "${CONTAINER_NAME}" rustban status --prometheus)"
+echo "${PROM_OUT}" | grep -q 'rustban_table_exists{table="rustban"} 1' || fail "Prometheus output missing table_exists: ${PROM_OUT}"
+echo "${PROM_OUT}" | grep -q 'rustban_active_bans{table="rustban",family="ipv4"}' || fail "Prometheus output missing active_bans: ${PROM_OUT}"
+echo "${PROM_OUT}" | grep -q 'rustban_dropped_packets_total{table="rustban",jail="test-sshd"}' || fail "Prometheus output missing dropped_packets_total: ${PROM_OUT}"
+echo "    Verified rustban status --prometheus metrics output"
+
+# Verify --log-format json emits valid NDJSON on stderr in dry-run
+docker exec "${CONTAINER_NAME}" /bin/sh -c 'timeout 1s rustban run -c /tmp/rustban-e2e.toml --dry-run --log-format json 2>&1 || true' | python3 -c '
+import json, sys
+events = []
+for line in sys.stdin:
+    line = line.strip()
+    if line.startswith("{"):
+        events.append(json.loads(line))
+assert any(e.get("event") == "init" and e.get("table") == "rustban" for e in events), f"missing JSON init event: {events}"
+print("    Verified --log-format json NDJSON daemon logging")
+' || fail "JSON log format verification failed"
+
 # Verify invalid config on SIGHUP is rejected without killing the daemon
 docker exec "${CONTAINER_NAME}" /bin/sh -c 'echo "not = [valid toml" > /tmp/rustban-e2e.toml && kill -HUP 1'
 sleep 0.4

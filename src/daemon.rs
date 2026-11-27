@@ -5,9 +5,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::config::{Config, JailConfig, LogSourceKind};
+use serde_json::json;
+
+use crate::config::{Config, JailConfig, LogFormat, LogSourceKind};
 use crate::ip::{discover_local_interface_ips, is_unbannable_special, IgnoreList, IpKey};
 use crate::matcher::JailMatcher;
 use crate::nft::NftClient;
@@ -49,7 +51,7 @@ impl ActiveTailers {
 }
 
 pub fn run_daemon(config: &Config, dry_run: bool) -> Result<(), String> {
-    run_daemon_inner(None, config, dry_run)
+    run_daemon_inner(None, config, dry_run, None)
 }
 
 pub fn run_daemon_with_path(
@@ -57,7 +59,49 @@ pub fn run_daemon_with_path(
     config: &Config,
     dry_run: bool,
 ) -> Result<(), String> {
-    run_daemon_inner(Some(config_path), config, dry_run)
+    run_daemon_inner(Some(config_path), config, dry_run, None)
+}
+
+pub fn run_daemon_with_options(
+    config_path: &Path,
+    config: &Config,
+    dry_run: bool,
+    log_format_override: Option<LogFormat>,
+) -> Result<(), String> {
+    run_daemon_inner(Some(config_path), config, dry_run, log_format_override)
+}
+
+/// Format a `SystemTime` as UTC RFC 3339 (`YYYY-MM-DDTHH:MM:SSZ`) with zero external crates.
+pub fn format_utc_rfc3339(now: SystemTime) -> String {
+    let secs = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let hour = rem / 3600;
+    let min = (rem % 3600) / 60;
+    let sec = rem % 60;
+
+    // Howard Hinnant's civil-from-days algorithm (days since 1970-01-01).
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
+}
+
+fn emit_json_log(level: &str, event: &str, mut fields: serde_json::Value) {
+    if let Some(obj) = fields.as_object_mut() {
+        obj.insert("ts".into(), json!(format_utc_rfc3339(SystemTime::now())));
+        obj.insert("level".into(), json!(level));
+        obj.insert("event".into(), json!(event));
+    }
+    eprintln!("{fields}");
 }
 
 struct CompiledRuntime {
@@ -181,6 +225,7 @@ fn run_daemon_inner(
     config_path: Option<&Path>,
     initial_config: &Config,
     dry_run: bool,
+    log_format_override: Option<LogFormat>,
 ) -> Result<(), String> {
     let CompiledRuntime {
         jails: mut compiled_jails,
@@ -188,15 +233,28 @@ fn run_daemon_inner(
         mut source_subscribers,
     } = compile_jails_and_sources(initial_config)?;
     let mut active_cfg = initial_config.clone();
+    let mut log_format = log_format_override.unwrap_or(active_cfg.log_format);
 
     let mut nft = NftClient::new(&active_cfg.nft_bin, &active_cfg.table_name, dry_run)?;
     nft.init_with_interfaces(&active_cfg.global_ignores, &active_cfg.ignore_interfaces)?;
-    eprintln!(
-        "[rustban] initialized nftables table 'inet {}' (dry_run={dry_run}, jails={}, ignore_interfaces={})",
-        active_cfg.table_name,
-        active_cfg.jails.len(),
-        active_cfg.ignore_interfaces.len()
-    );
+    match log_format {
+        LogFormat::Text => eprintln!(
+            "[rustban] initialized nftables table 'inet {}' (dry_run={dry_run}, jails={}, ignore_interfaces={})",
+            active_cfg.table_name,
+            active_cfg.jails.len(),
+            active_cfg.ignore_interfaces.len()
+        ),
+        LogFormat::Json => emit_json_log(
+            "info",
+            "init",
+            json!({
+                "table": active_cfg.table_name,
+                "dry_run": dry_run,
+                "jails": active_cfg.jails.len(),
+                "ignore_interfaces": active_cfg.ignore_interfaces.len(),
+            }),
+        ),
+    }
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let reload_requested = Arc::new(AtomicBool::new(false));
@@ -242,6 +300,7 @@ fn run_daemon_inner(
                         tailers.shutdown();
                         tailers = spawn_tailers(&new_cfg, new_sources);
                         active_cfg = new_cfg;
+                        log_format = log_format_override.unwrap_or(active_cfg.log_format);
                         nft = new_nft;
                         compiled_jails = new_jails;
                         source_subscribers = new_subs;
@@ -252,23 +311,48 @@ fn run_daemon_inner(
                                 Vec::new()
                             };
                         last_self_refresh = Instant::now();
-                        eprintln!(
-                            "[rustban] reloaded config from '{}' (jails={}, whitelisted_v4={}, whitelisted_v6={}, ignore_interfaces={})",
-                            path.display(),
-                            active_cfg.jails.len(),
-                            active_cfg.global_ignores.v4_cidrs().len(),
-                            active_cfg.global_ignores.v6_cidrs().len(),
-                            active_cfg.ignore_interfaces.len()
-                        );
+                        match log_format {
+                            LogFormat::Text => eprintln!(
+                                "[rustban] reloaded config from '{}' (jails={}, whitelisted_v4={}, whitelisted_v6={}, ignore_interfaces={})",
+                                path.display(),
+                                active_cfg.jails.len(),
+                                active_cfg.global_ignores.v4_cidrs().len(),
+                                active_cfg.global_ignores.v6_cidrs().len(),
+                                active_cfg.ignore_interfaces.len()
+                            ),
+                            LogFormat::Json => emit_json_log(
+                                "info",
+                                "reload",
+                                json!({
+                                    "config_path": path.display().to_string(),
+                                    "jails": active_cfg.jails.len(),
+                                    "whitelisted_v4": active_cfg.global_ignores.v4_cidrs().len(),
+                                    "whitelisted_v6": active_cfg.global_ignores.v6_cidrs().len(),
+                                    "ignore_interfaces": active_cfg.ignore_interfaces.len(),
+                                }),
+                            ),
+                        }
                     }
-                    Err(e) => {
-                        eprintln!(
+                    Err(e) => match log_format {
+                        LogFormat::Text => eprintln!(
                             "[rustban] ERROR SIGHUP reload rejected (keeping previous config active): {e}"
-                        );
-                    }
+                        ),
+                        LogFormat::Json => {
+                            emit_json_log("error", "reload_error", json!({ "error": e }))
+                        }
+                    },
                 }
             } else {
-                eprintln!("[rustban] warn: SIGHUP received but daemon has no config file path");
+                match log_format {
+                    LogFormat::Text => eprintln!(
+                        "[rustban] warn: SIGHUP received but daemon has no config file path"
+                    ),
+                    LogFormat::Json => emit_json_log(
+                        "warn",
+                        "reload_skipped",
+                        json!({ "reason": "no config file path" }),
+                    ),
+                }
             }
         }
 
@@ -281,6 +365,7 @@ fn run_daemon_inner(
                     &source_subscribers,
                     &mut compiled_jails,
                     now,
+                    log_format,
                     &mut pending_bans,
                 );
 
@@ -296,6 +381,7 @@ fn run_daemon_inner(
                                 &source_subscribers,
                                 &mut compiled_jails,
                                 now,
+                                log_format,
                                 &mut pending_bans,
                             );
                         }
@@ -305,16 +391,34 @@ fn run_daemon_inner(
 
                 if !pending_bans.is_empty() {
                     if let Err(e) = nft.ban_batch(&pending_bans) {
-                        eprintln!(
-                            "[rustban] ERROR failed to apply ban batch ({} entries): {e}",
-                            pending_bans.len()
-                        );
+                        match log_format {
+                            LogFormat::Text => eprintln!(
+                                "[rustban] ERROR failed to apply ban batch ({} entries): {e}",
+                                pending_bans.len()
+                            ),
+                            LogFormat::Json => emit_json_log(
+                                "error",
+                                "ban_batch_error",
+                                json!({ "count": pending_bans.len(), "error": e }),
+                            ),
+                        }
                         if pending_bans.len() > 1 {
                             for (key, ban_time, jail_name) in &pending_bans {
                                 if let Err(ie) = nft.ban(*key, *ban_time, jail_name) {
-                                    eprintln!(
-                                        "[rustban] ERROR failed to ban ip={key} jail={jail_name}: {ie}"
-                                    );
+                                    match log_format {
+                                        LogFormat::Text => eprintln!(
+                                            "[rustban] ERROR failed to ban ip={key} jail={jail_name}: {ie}"
+                                        ),
+                                        LogFormat::Json => emit_json_log(
+                                            "error",
+                                            "ban_error",
+                                            json!({
+                                                "ip": key.to_string(),
+                                                "jail": jail_name,
+                                                "error": ie,
+                                            }),
+                                        ),
+                                    }
                                 }
                             }
                         }
@@ -334,17 +438,32 @@ fn run_daemon_inner(
                         match refresh_self_ignores(&mut active_cfg, &mut compiled_jails, &nft) {
                             Ok(()) => {
                                 last_local_ips = current_local_ips;
-                                eprintln!(
-                                    "[rustban] refreshed ignore_self whitelist (whitelisted_v4={}, whitelisted_v6={})",
-                                    active_cfg.global_ignores.v4_cidrs().len(),
-                                    active_cfg.global_ignores.v6_cidrs().len()
-                                );
+                                match log_format {
+                                    LogFormat::Text => eprintln!(
+                                        "[rustban] refreshed ignore_self whitelist (whitelisted_v4={}, whitelisted_v6={})",
+                                        active_cfg.global_ignores.v4_cidrs().len(),
+                                        active_cfg.global_ignores.v6_cidrs().len()
+                                    ),
+                                    LogFormat::Json => emit_json_log(
+                                        "info",
+                                        "refresh_self",
+                                        json!({
+                                            "whitelisted_v4": active_cfg.global_ignores.v4_cidrs().len(),
+                                            "whitelisted_v6": active_cfg.global_ignores.v6_cidrs().len(),
+                                        }),
+                                    ),
+                                }
                             }
-                            Err(e) => {
-                                eprintln!(
+                            Err(e) => match log_format {
+                                LogFormat::Text => eprintln!(
                                     "[rustban] ERROR failed to refresh ignore_self whitelist: {e}"
-                                );
-                            }
+                                ),
+                                LogFormat::Json => emit_json_log(
+                                    "error",
+                                    "refresh_self_error",
+                                    json!({ "error": e }),
+                                ),
+                            },
                         }
                     }
                 }
@@ -363,10 +482,17 @@ fn run_daemon_inner(
         }
     }
 
-    eprintln!(
-        "[rustban] shutting down (preserving active bans in kernel table 'inet {}')",
-        active_cfg.table_name
-    );
+    match log_format {
+        LogFormat::Text => eprintln!(
+            "[rustban] shutting down (preserving active bans in kernel table 'inet {}')",
+            active_cfg.table_name
+        ),
+        LogFormat::Json => emit_json_log(
+            "info",
+            "shutdown",
+            json!({ "table": active_cfg.table_name, "preserved_bans": true }),
+        ),
+    }
     tailers.shutdown();
     Ok(())
 }
@@ -427,6 +553,7 @@ fn process_log_event(
     source_subscribers: &[Vec<usize>],
     compiled_jails: &mut [CompiledJail],
     now: Instant,
+    log_format: LogFormat,
     pending_bans: &mut Vec<(IpKey, Duration, String)>,
 ) {
     if let Some(jail_indices) = source_subscribers.get(event.source_id) {
@@ -446,25 +573,52 @@ fn process_log_event(
                         Some(esc) => esc.record_ban(key, now),
                         None => (jail.config.ban_time, 1),
                     };
-                    if strike > 1 {
-                        eprintln!(
-                            "[rustban] BAN jail={} ip={} timeout={}s strike={}",
-                            jail.config.name,
-                            key,
-                            ban_time.as_secs(),
-                            strike
-                        );
-                    } else {
-                        eprintln!(
-                            "[rustban] BAN jail={} ip={} timeout={}s",
-                            jail.config.name,
-                            key,
-                            ban_time.as_secs()
-                        );
+                    match log_format {
+                        LogFormat::Text => {
+                            if strike > 1 {
+                                eprintln!(
+                                    "[rustban] BAN jail={} ip={} timeout={}s strike={}",
+                                    jail.config.name,
+                                    key,
+                                    ban_time.as_secs(),
+                                    strike
+                                );
+                            } else {
+                                eprintln!(
+                                    "[rustban] BAN jail={} ip={} timeout={}s",
+                                    jail.config.name,
+                                    key,
+                                    ban_time.as_secs()
+                                );
+                            }
+                        }
+                        LogFormat::Json => emit_json_log(
+                            "info",
+                            "ban",
+                            json!({
+                                "jail": jail.config.name,
+                                "ip": key.to_string(),
+                                "timeout_secs": ban_time.as_secs(),
+                                "strike": strike,
+                            }),
+                        ),
                     }
                     pending_bans.push((key, ban_time, jail.config.name.clone()));
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_utc_rfc3339_timestamps_accurately() {
+        assert_eq!(format_utc_rfc3339(UNIX_EPOCH), "1970-01-01T00:00:00Z");
+        // 2026-11-27T01:23:45Z
+        let t = UNIX_EPOCH + Duration::from_secs(1_795_742_625);
+        assert_eq!(format_utc_rfc3339(t), "2026-11-27T01:23:45Z");
     }
 }

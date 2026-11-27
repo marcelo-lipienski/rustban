@@ -7,13 +7,13 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use rustban::config::{
-    parse_duration_nonzero, validate_comment_safe, Config, LogSourceKind, DEFAULT_NFT_BIN,
-    DEFAULT_TABLE_NAME,
+    parse_duration_nonzero, validate_comment_safe, Config, LogFormat, LogSourceKind,
+    DEFAULT_NFT_BIN, DEFAULT_TABLE_NAME,
 };
-use rustban::daemon::run_daemon_with_path;
+use rustban::daemon::run_daemon_with_options;
 use rustban::ip::{is_unbannable_special, IgnoreList, IpKey};
 use rustban::matcher::{lint_fail_regexes, JailMatcher};
-use rustban::nft::NftClient;
+use rustban::nft::{format_prometheus_metrics, NftClient};
 
 const DEFAULT_CONFIG_PATH: &str = "/etc/rustban/rustban.toml";
 
@@ -49,6 +49,9 @@ enum Commands {
         /// Log intended nftables rules and bans without modifying the kernel firewall
         #[arg(long)]
         dry_run: bool,
+        /// Override daemon log output format (text or json)
+        #[arg(long, value_enum)]
+        log_format: Option<LogFormat>,
     },
     /// Show active bans, remaining kernel TTLs, and dropped packet counters from nftables
     Status {
@@ -62,8 +65,11 @@ enum Commands {
         #[arg(long)]
         nft_bin: Option<PathBuf>,
         /// Emit machine-readable JSON output
-        #[arg(long)]
+        #[arg(long, conflicts_with = "prometheus")]
         json: bool,
+        /// Emit Prometheus text exposition metrics (for node_exporter textfile collector)
+        #[arg(long, conflicts_with = "json")]
+        prometheus: bool,
     },
     /// Manually ban an IPv4 address or IPv6 /64 prefix directly in nftables
     Ban {
@@ -194,15 +200,20 @@ fn resolve_nft_client(
 
 fn execute(cli: Cli) -> Result<(), String> {
     match cli.command {
-        Commands::Run { config, dry_run } => {
+        Commands::Run {
+            config,
+            dry_run,
+            log_format,
+        } => {
             let cfg = Config::from_file(&config)?;
-            run_daemon_with_path(&config, &cfg, dry_run)
+            run_daemon_with_options(&config, &cfg, dry_run, log_format)
         }
         Commands::Status {
             config,
             table,
             nft_bin,
             json,
+            prometheus,
         } => {
             let (client, _) =
                 resolve_nft_client(config.as_deref(), table.as_deref(), nft_bin.as_deref())?;
@@ -211,6 +222,10 @@ fn execute(cli: Cli) -> Result<(), String> {
                 let out = serde_json::to_string_pretty(&status)
                     .map_err(|e| format!("failed to serialize status JSON: {e}"))?;
                 println!("{out}");
+                return Ok(());
+            }
+            if prometheus {
+                print!("{}", format_prometheus_metrics(&status));
                 return Ok(());
             }
 
