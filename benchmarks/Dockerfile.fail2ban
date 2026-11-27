@@ -1,0 +1,12 @@
+# syntax=docker/dockerfile:1
+# Minimal Debian Bookworm image with official fail2ban + nftables + pyinotify
+# Matches rustban's debian:bookworm-slim + nftables runtime base for apples-to-apples benchmarking.
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        nftables \
+        fail2ban \
+        python3-pyinotify \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/run/fail2ban /var/lib/fail2ban /var/log

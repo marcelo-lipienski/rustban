@@ -1,0 +1,241 @@
+{
+  "generated_at_utc": "2026-11-27T02:58:25Z",
+  "environment": {
+    "kernel": "6.17.0-40-generic",
+    "arch": "x86_64",
+    "cpu_model": "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz",
+    "cpu_cores": 8,
+    "docker_version": "29.6.1",
+    "container_base": "debian:bookworm-slim"
+  },
+  "rustban": {
+    "target": "rustban",
+    "meta": {
+      "tool_version": "rustban 0.1.0",
+      "nft_version": "nftables v1.0.6 (Lester Gooch #5)",
+      "binary_bytes": 2236280,
+      "runtime_image_bytes": 88090234
+    },
+    "startup_and_idle": {
+      "cold_startup_ms_runs": [
+        13.37,
+        11.78,
+        15.16,
+        10.09,
+        13.48
+      ],
+      "cold_startup_ms_median": 13.37,
+      "cold_startup_ms_min": 10.09,
+      "idle_memory": {
+        "rss_kib": 4268,
+        "hwm_kib": 4268,
+        "pss_kib": 3498,
+        "threads": 3
+      }
+    },
+    "single_ip_latency": {
+      "trials": 20,
+      "min_ms": 8.03,
+      "p50_ms": 12.32,
+      "mean_ms": 12.06,
+      "p95_ms": 15.74,
+      "max_ms": 17.04
+    },
+    "noise_throughput_100k": {
+      "lines": 100000,
+      "payload_mb": 10.11,
+      "wall_secs": 0.0363,
+      "lines_per_sec": 2753078.2,
+      "memory": {
+        "rss_kib": 4388,
+        "hwm_kib": 4388,
+        "pss_kib": 3660,
+        "threads": 3
+      },
+      "cpu": {
+        "self_cpu_ms": 40.0,
+        "child_cpu_ms": 0.0,
+        "total_cpu_ms": 40.0
+      }
+    },
+    "attack_burst_200": {
+      "total_lines": 15600,
+      "bans_triggered": 200,
+      "unique_scanners_tracked": 5000,
+      "noise_lines": 10000,
+      "wall_secs": 0.0267,
+      "bans_per_sec": 7477.3,
+      "memory": {
+        "rss_kib": 6140,
+        "hwm_kib": 6140,
+        "pss_kib": 5346,
+        "threads": 3
+      },
+      "cpu": {
+        "self_cpu_ms": 20.0,
+        "child_cpu_ms": 0.0,
+        "total_cpu_ms": 20.0
+      },
+      "cli_status_ms_median": 3.79,
+      "cli_status_ms_min": 3.65
+    },
+    "spoofed_ip_flood_50k": {
+      "unique_ips": 50000,
+      "wall_secs": 0.168,
+      "ips_per_sec": 297634.3,
+      "memory": {
+        "rss_kib": 13308,
+        "hwm_kib": 13308,
+        "pss_kib": 12638,
+        "threads": 3
+      },
+      "cpu": {
+        "self_cpu_ms": 220.0,
+        "child_cpu_ms": 0.0,
+        "total_cpu_ms": 220.0
+      }
+    },
+    "ban_expiration_100": {
+      "bans_expired": 100,
+      "configured_ban_time_secs": 5,
+      "drain_wall_secs": 5.023,
+      "expiration_cpu": {
+        "self_cpu_ms": 0.0,
+        "child_cpu_ms": 0.0,
+        "total_cpu_ms": 0.0
+      },
+      "post_expiry_memory": {
+        "rss_kib": 4240,
+        "hwm_kib": 4240,
+        "pss_kib": 3570,
+        "threads": 3
+      }
+    },
+    "offline_regex_100k": {
+      "total_lines": 100000,
+      "matched_lines": 10000,
+      "runs_secs": [
+        0.047,
+        0.0428,
+        0.0401
+      ],
+      "median_secs": 0.0428,
+      "lines_per_sec": 2336448.6
+    }
+  },
+  "fail2ban": {
+    "target": "fail2ban",
+    "meta": {
+      "tool_version": "Fail2Ban v1.0.2 (Python 3.11.2)",
+      "nft_version": "nftables v1.0.6 (Lester Gooch #5)",
+      "installed_pkg_bytes": 23949312,
+      "runtime_image_bytes": 124581584
+    },
+    "startup_and_idle": {
+      "cold_startup_ms_runs": [
+        210.21,
+        187.58,
+        185.22,
+        184.74,
+        184.27
+      ],
+      "cold_startup_ms_median": 185.22,
+      "cold_startup_ms_min": 184.27,
+      "idle_memory": {
+        "rss_kib": 18128,
+        "hwm_kib": 18128,
+        "pss_kib": 15400,
+        "threads": 5
+      }
+    },
+    "single_ip_latency": {
+      "trials": 20,
+      "min_ms": 151.07,
+      "p50_ms": 153.11,
+      "mean_ms": 165.71,
+      "p95_ms": 155.22,
+      "max_ms": 404.11
+    },
+    "noise_throughput_100k": {
+      "lines": 100000,
+      "payload_mb": 10.11,
+      "wall_secs": 1.8794,
+      "lines_per_sec": 53209.0,
+      "memory": {
+        "rss_kib": 19836,
+        "hwm_kib": 19836,
+        "pss_kib": 17034,
+        "threads": 5
+      },
+      "cpu": {
+        "self_cpu_ms": 1400.0,
+        "child_cpu_ms": 0.0,
+        "total_cpu_ms": 1400.0
+      }
+    },
+    "attack_burst_200": {
+      "total_lines": 15600,
+      "bans_triggered": 200,
+      "unique_scanners_tracked": 5000,
+      "noise_lines": 10000,
+      "wall_secs": 1.0236,
+      "bans_per_sec": 195.4,
+      "memory": {
+        "rss_kib": 26596,
+        "hwm_kib": 26596,
+        "pss_kib": 23852,
+        "threads": 5
+      },
+      "cpu": {
+        "self_cpu_ms": 640.0,
+        "child_cpu_ms": 480.0,
+        "total_cpu_ms": 1120.0
+      },
+      "cli_status_ms_median": 44.5,
+      "cli_status_ms_min": 40.95
+    },
+    "spoofed_ip_flood_50k": {
+      "unique_ips": 50000,
+      "wall_secs": 2.6506,
+      "ips_per_sec": 18863.6,
+      "memory": {
+        "rss_kib": 70936,
+        "hwm_kib": 70936,
+        "pss_kib": 68198,
+        "threads": 5
+      },
+      "cpu": {
+        "self_cpu_ms": 2390.0,
+        "child_cpu_ms": 0.0,
+        "total_cpu_ms": 2390.0
+      }
+    },
+    "ban_expiration_100": {
+      "bans_expired": 100,
+      "configured_ban_time_secs": 5,
+      "drain_wall_secs": 5.699,
+      "expiration_cpu": {
+        "self_cpu_ms": 110.0,
+        "child_cpu_ms": 270.0,
+        "total_cpu_ms": 380.0
+      },
+      "post_expiry_memory": {
+        "rss_kib": 20128,
+        "hwm_kib": 20128,
+        "pss_kib": 17354,
+        "threads": 5
+      }
+    },
+    "offline_regex_100k": {
+      "total_lines": 100000,
+      "matched_lines": 10000,
+      "runs_secs": [
+        1.7478,
+        1.8542,
+        2.1726
+      ],
+      "median_secs": 1.8542,
+      "lines_per_sec": 53931.6
+    }
+  }
+}

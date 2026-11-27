@@ -1,0 +1,30 @@
+# Rust build artifacts (Cargo.lock is intentionally tracked for binary reproducibility)
+/target/
+**/*.rs.bk
+*.pdb
+
+# Extracted release binaries and local reports
+/dist/
+
+# Local runtime configuration (keep rustban.toml.example tracked)
+/rustban.toml
+
+# Python cache & bytecode (benchmark/security harnesses)
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+
+# Temporary files & logs
+*.tmp
+*.bak
+*.log
+
+# Editor & OS files
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

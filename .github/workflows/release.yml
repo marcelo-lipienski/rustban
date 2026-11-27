@@ -1,0 +1,230 @@
+name: Release Benchmarks, Security & Binaries
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional existing release tag to attach assets and update notes for"
+        required: false
+        type: string
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag || '' }}
+
+jobs:
+  security-check:
+    name: Security Checks (rustban-only + cargo-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG || github.ref }}
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Audit Cargo dependencies (RustSec)
+        run: cargo audit
+
+      - name: Run live 8-vector rustban security gate
+        run: ./scripts/security-check-docker.sh --out-dir dist/security
+
+      - name: Upload security report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: |
+            dist/security/security-report.json
+            dist/security/security-report.md
+
+  build-binary:
+    name: Build Linux x86_64 Release Binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG || github.ref }}
+
+      - name: Build & extract release binary via Docker
+        run: ./scripts/build-docker.sh --extract
+
+      - name: Package release archive & checksums
+        run: |
+          TAG="${RELEASE_TAG:-${GITHUB_REF_NAME}}"
+          STAGE="dist/release-assets"
+          PKG_DIR="dist/rustban-${TAG}-x86_64-unknown-linux-gnu"
+          mkdir -p "${STAGE}" "${PKG_DIR}"
+
+          cp dist/rustban "${PKG_DIR}/rustban"
+          cp rustban.toml.example contrib/rustban.service LICENSE README.md "${PKG_DIR}/"
+          chmod 0755 "${PKG_DIR}/rustban"
+
+          tar -C dist -czf "${STAGE}/rustban-${TAG}-x86_64-unknown-linux-gnu.tar.gz" "rustban-${TAG}-x86_64-unknown-linux-gnu"
+          cp dist/rustban "${STAGE}/rustban-${TAG}-linux-x86_64"
+
+          (
+            cd "${STAGE}"
+            sha256sum "rustban-${TAG}-x86_64-unknown-linux-gnu.tar.gz" "rustban-${TAG}-linux-x86_64" > SHA256SUMS.txt
+          )
+          ls -la "${STAGE}"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-binary
+          path: dist/release-assets/
+
+  benchmarks:
+    name: Performance Benchmarks (rustban vs fail2ban)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG || github.ref }}
+
+      - name: Run Docker benchmark suite
+        run: ./scripts/bench-docker.sh
+
+      - name: Upload benchmark results artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            benchmarks/results.json
+            benchmarks/RESULTS.md
+
+  publish:
+    name: Publish Release Assets, Notes & Benchmarks PR
+    runs-on: ubuntu-latest
+    needs: [security-check, build-binary, benchmarks]
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Download security report
+        uses: actions/download-artifact@v4
+        with:
+          name: security-report
+          path: _artifacts/security
+
+      - name: Download release binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: release-binary
+          path: _artifacts/binary
+
+      - name: Download benchmark results
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmark-results
+          path: _artifacts/benchmarks
+
+      - name: Copy updated benchmark results into workspace
+        run: |
+          cp _artifacts/benchmarks/results.json benchmarks/results.json
+          cp _artifacts/benchmarks/RESULTS.md benchmarks/RESULTS.md
+
+      - name: Upload release assets & append summary to Release notes
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${RELEASE_TAG}"
+          ASSETS_DIR="_artifacts/upload"
+          mkdir -p "${ASSETS_DIR}"
+
+          cp _artifacts/binary/* "${ASSETS_DIR}/"
+          cp _artifacts/benchmarks/results.json "${ASSETS_DIR}/benchmark-results-${TAG}.json"
+          cp _artifacts/benchmarks/RESULTS.md "${ASSETS_DIR}/BENCHMARK_RESULTS-${TAG}.md"
+          cp _artifacts/security/security-report.json "${ASSETS_DIR}/security-report-${TAG}.json"
+          cp _artifacts/security/security-report.md "${ASSETS_DIR}/SECURITY_REPORT-${TAG}.md"
+
+          gh release upload "${TAG}" "${ASSETS_DIR}"/* --clobber
+
+          python3 - "${TAG}" _artifacts/benchmarks/RESULTS.md _artifacts/security/security-report.json << 'PY'
+          import json, re, subprocess, sys
+
+          tag, bench_md_path, sec_json_path = sys.argv[1:4]
+
+          with open(bench_md_path) as f:
+              bench_md = f.read()
+          with open(sec_json_path) as f:
+              sec = json.load(f)
+
+          # Extract the Summary Comparison table from RESULTS.md
+          m = re.search(r"(## Summary Comparison\n.*?)(\n---|\Z)", bench_md, re.S)
+          summary_section = m.group(1).strip() if m else bench_md.strip()
+
+          start_marker = "<!-- rustban-release-reports:start -->"
+          end_marker = "<!-- rustban-release-reports:end -->"
+
+          block = (
+              f"{start_marker}\n"
+              f"---\n\n"
+              f"## Automated Release Verification ({tag})\n\n"
+              f"- **Live Security Gate (`rustban`)**: **{sec['passed']}/{sec['total']} vectors PROTECTED** + `cargo audit` passed\n"
+              f"- **Full Reports Attached**: `BENCHMARK_RESULTS-{tag}.md`, `benchmark-results-{tag}.json`, `SECURITY_REPORT-{tag}.md`, `security-report-{tag}.json`, `SHA256SUMS.txt`\n\n"
+              f"{summary_section}\n"
+              f"{end_marker}"
+          )
+
+          existing = subprocess.check_output(
+              ["gh", "release", "view", tag, "--json", "body", "--jq", ".body"],
+              text=True,
+          ).rstrip()
+
+          if start_marker in existing and end_marker in existing:
+              updated = re.sub(
+                  re.escape(start_marker) + r".*?" + re.escape(end_marker),
+                  block,
+                  existing,
+                  flags=re.S,
+              )
+          else:
+              updated = (existing + "\n\n" + block) if existing else block
+
+          subprocess.run(
+              ["gh", "release", "edit", tag, "--notes-file", "-"],
+              input=updated,
+              text=True,
+              check=True,
+          )
+          PY
+
+      - name: Clean temporary artifact staging directory
+        run: rm -rf _artifacts
+
+      - name: Open PR to update benchmarks on main
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: chore/benchmarks-${{ env.RELEASE_TAG || github.run_id }}
+          delete-branch: true
+          commit-message: "chore(benchmarks): update results for ${{ env.RELEASE_TAG || github.ref_name }}"
+          title: "chore(benchmarks): update benchmark results for ${{ env.RELEASE_TAG || github.ref_name }}"
+          body: |
+            Automated benchmark results generated for release `${{ env.RELEASE_TAG || github.ref_name }}`.
+
+            - Updated `benchmarks/results.json`
+            - Updated `benchmarks/RESULTS.md`
+            - Verified 8/8 `rustban` live security checks and `cargo audit` passed.
+          add-paths: |
+            benchmarks/results.json
+            benchmarks/RESULTS.md

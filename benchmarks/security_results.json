@@ -1,0 +1,158 @@
+{
+  "generated_at_utc": "2026-11-27T03:01:12Z",
+  "environment": {
+    "kernel": "6.17.0-40-generic",
+    "arch": "x86_64",
+    "docker_version": "29.6.1",
+    "container_base": "debian:bookworm-slim"
+  },
+  "rustban": {
+    "target": "rustban",
+    "self_ip": "172.17.0.2",
+    "tests": {
+      "self_ip_log_flood": {
+        "status": "PROTECTED",
+        "self_ip": "172.17.0.2",
+        "banned_v4": [],
+        "detail": "Host interface IP 172.17.0.2 auto-protected (0 bans)"
+      },
+      "cli_forced_self_lockout": {
+        "status": "PROTECTED",
+        "normal_cli_refused": true,
+        "self_traffic_survived": true,
+        "detail": "CLI refused default ban=True; self-traffic to 172.17.0.2:2299 SURVIVED even after forced ban (kernel whitelist return)"
+      },
+      "username_log_spoofing": {
+        "status": "PROTECTED",
+        "victim_banned": false,
+        "attacker_banned": true,
+        "banned_v4": [
+          "198.51.100.77"
+        ],
+        "detail": "Victim 203.0.113.1 safe; real attacker 198.51.100.77 accurately banned"
+      },
+      "special_non_routable_ips": {
+        "status": "PROTECTED",
+        "tested_ips": [
+          "0.0.0.0",
+          "127.0.0.1",
+          "224.0.0.1",
+          "255.255.255.255",
+          "::",
+          "::1",
+          "::2",
+          "::ffff:127.0.0.1"
+        ],
+        "banned": [],
+        "detail": "Zero special/non-routable/broadcast/loopback-adjacent addresses banned"
+      },
+      "shell_and_nft_injection": {
+        "status": "PROTECTED",
+        "rce_files_created": [],
+        "table_intact": true,
+        "unexpected_bans": [],
+        "detail": "Blocked all shell & nftables syntax injection payloads; firewall table intact and 0 false bans"
+      },
+      "ipv6_64_rotation_evasion": {
+        "status": "PROTECTED",
+        "banned_v6": [
+          "2001:db8:cafe:1234::"
+        ],
+        "detail": "Blocked IPv6 host-bit rotation evasion -> banned ['2001:db8:cafe:1234::']"
+      },
+      "redos_and_binary_dos": {
+        "status": "PROTECTED",
+        "daemon_alive": true,
+        "sentinel_banned": true,
+        "recovery_ms": 37.7,
+        "detail": "Survived 50 ReDoS payloads + 256 KiB binary garbage and banned sentinel in 37.7 ms"
+      },
+      "cross_service_and_established": {
+        "status": "PROTECTED",
+        "ban_installed": true,
+        "tcp_2222_dropped": true,
+        "tcp_8080_dropped": true,
+        "udp_5353_dropped": true,
+        "established_tcp_8080_severed": true,
+        "detail": "Dropped TCP 2222, TCP 8080, UDP 5353, AND severed already-established TCP 8080 session"
+      }
+    }
+  },
+  "fail2ban": {
+    "target": "fail2ban",
+    "self_ip": "172.17.0.2",
+    "tests": {
+      "self_ip_log_flood": {
+        "status": "PROTECTED",
+        "self_ip": "172.17.0.2",
+        "banned_v4": [],
+        "detail": "Host interface IP 172.17.0.2 auto-protected (0 bans)"
+      },
+      "cli_forced_self_lockout": {
+        "status": "VULNERABLE",
+        "normal_cli_refused": false,
+        "self_traffic_survived": false,
+        "detail": "SELF-LOCKOUT: manual CLI ban on 172.17.0.2 dropped host's own traffic to 172.17.0.2:2299!"
+      },
+      "username_log_spoofing": {
+        "status": "PROTECTED",
+        "victim_banned": false,
+        "attacker_banned": true,
+        "banned_v4": [
+          "198.51.100.77"
+        ],
+        "detail": "Victim 203.0.113.1 safe; real attacker 198.51.100.77 accurately banned"
+      },
+      "special_non_routable_ips": {
+        "status": "VULNERABLE",
+        "tested_ips": [
+          "0.0.0.0",
+          "127.0.0.1",
+          "224.0.0.1",
+          "255.255.255.255",
+          "::",
+          "::1",
+          "::2",
+          "::ffff:127.0.0.1"
+        ],
+        "banned": [
+          "0.0.0.0",
+          "224.0.0.1",
+          "255.255.255.255"
+        ],
+        "detail": "Banned special/non-routable address(es): ['0.0.0.0', '224.0.0.1', '255.255.255.255']"
+      },
+      "shell_and_nft_injection": {
+        "status": "PARTIAL",
+        "rce_files_created": [],
+        "table_intact": true,
+        "unexpected_bans": [
+          "198.51.100.88",
+          "203.0.113.9"
+        ],
+        "detail": "No RCE or ruleset flush, but malformed injected host strings still triggered false bans: ['198.51.100.88', '203.0.113.9']"
+      },
+      "ipv6_64_rotation_evasion": {
+        "status": "VULNERABLE",
+        "banned_v6": [],
+        "detail": "EVADED: 0 IPv6 bans triggered across 5 failures from same /64 (tracks /128 individually)"
+      },
+      "redos_and_binary_dos": {
+        "status": "PROTECTED",
+        "daemon_alive": true,
+        "sentinel_banned": true,
+        "recovery_ms": 736.88,
+        "detail": "Survived 50 ReDoS payloads + 256 KiB binary garbage and banned sentinel in 736.88 ms"
+      },
+      "cross_service_and_established": {
+        "status": "VULNERABLE",
+        "ban_installed": true,
+        "tcp_2222_dropped": true,
+        "tcp_8080_dropped": true,
+        "udp_5353_dropped": false,
+        "established_tcp_8080_severed": true,
+        "detail": "BYPASS: failed to drop UDP 5353 (TCP 2222=True, TCP 8080=True, UDP 5353=False, est_8080=True)"
+      }
+    }
+  }
+}

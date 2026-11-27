@@ -1,0 +1,13 @@
+.git/
+.github/
+target/
+dist/
+benchmarks/__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.swp
+*.swo
+*.tmp
+*.log
+.DS_Store

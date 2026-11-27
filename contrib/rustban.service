@@ -1,0 +1,36 @@
+[Unit]
+Description=rustban - Lightweight Fail2Ban replacement using nftables timeout sets
+Documentation=https://github.com/marcelo-lipienski/rustban
+After=network-online.target nftables.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/rustban run -c /etc/rustban/rustban.toml
+Restart=on-failure
+RestartSec=3s
+
+# Run unprivileged with only CAP_NET_ADMIN and log-reading group membership
+DynamicUser=yes
+SupplementaryGroups=adm systemd-journal
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ReadOnlyPaths=/etc/rustban /var/log
+
+[Install]
+WantedBy=multi-user.target

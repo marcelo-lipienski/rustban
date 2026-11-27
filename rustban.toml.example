@@ -1,0 +1,95 @@
+# rustban example configuration
+# All detection rules are explicit linear-time Rust regexes (no hidden presets).
+# Use `<HOST>` where an IPv4 or IPv6 address appears (or a custom `(?P<ip>...)` capture).
+#
+# SECURITY NOTE: Always anchor fail_regex patterns to the end of the log line (`$`)
+# and use greedy wildcards before `<HOST>` so attacker-controlled usernames/URIs
+# cannot spoof an earlier `from <VICTIM_IP>` substring.
+
+[global]
+nft_bin = "/usr/sbin/nft"
+journalctl_bin = "/usr/bin/journalctl"
+table_name = "rustban"
+find_time = "10m"
+ban_time = "1h"
+max_retries = 5
+max_tracked_ips = 65536
+max_line_bytes = 4096
+
+# Includes 127.0.0.0/8, ::1/128, and fe80::/10 automatically in both userspace
+# and kernel nftables `return` rules before the drop rules.
+include_default_ignores = true
+
+# Auto-detect and protect all of this host's own local interface IPs (/proc/net/*)
+# in both userspace and kernel whitelist sets so the host can never ban itself.
+ignore_self = true
+
+ignore_ips = [
+    # "10.0.0.0/8",
+    # "192.168.0.0/16",
+    # "100.64.0.0/10", # Tailscale / CGNAT
+]
+
+# --- OpenSSH via systemd-journald ---
+[jails.sshd]
+enabled = true
+systemd_unit = "ssh.service"
+# Alternatively, watch a plain log file instead of systemd_unit:
+# log_path = "/var/log/auth.log"
+max_retries = 5
+find_time = "10m"
+ban_time = "1h"
+fail_regex = [
+    'Failed (?:password|publickey) for (?:invalid user )?.+ from <HOST> port \d+ ssh2$',
+    'Invalid user .+ from <HOST> port \d+$',
+    'Connection closed by (?:authenticating|invalid) user .+ <HOST> port \d+(?: \[preauth\])?$',
+    'Disconnected from (?:authenticating|invalid) user .+ <HOST> port \d+(?: \[preauth\])?$',
+    'maximum authentication attempts exceeded for (?:invalid user )?.+ from <HOST> port \d+ ssh2 \[preauth\]$',
+]
+ignore_regex = []
+
+# --- Nginx HTTP Basic Auth failures ---
+[jails.nginx-auth]
+enabled = false
+log_path = "/var/log/nginx/error.log"
+max_retries = 5
+find_time = "10m"
+ban_time = "1h"
+fail_regex = [
+    'no user/password was provided for basic authentication, client: <HOST>, server: [^,]+, request: ',
+    'user ".*": password mismatch, client: <HOST>, server: [^,]+, request: ',
+    'user ".*" was not found in "[^"]*", client: <HOST>, server: [^,]+, request: ',
+]
+
+# --- Nginx Bot / Scanner 404 probes ---
+[jails.nginx-botsearch]
+enabled = false
+log_path = "/var/log/nginx/access.log"
+max_retries = 3
+find_time = "5m"
+ban_time = "2h"
+fail_regex = [
+    '^<HOST> \S+ \S+ \[[^\]]+\] "(?:GET|POST|HEAD) /(?:wp-login\.php|xmlrpc\.php|\.env|\.git/|phpmyadmin|admin\.php)[^"]*" (?:400|403|404) ',
+]
+
+# --- Caddy JSON access log scanner probes ---
+[jails.caddy-botsearch]
+enabled = false
+log_path = "/var/log/caddy/access.log"
+max_retries = 5
+find_time = "5m"
+ban_time = "1h"
+fail_regex = [
+    '"request":\{"remote_ip":"<HOST>",[^}]*"uri":"/(?:wp-login\.php|xmlrpc\.php|\.env|\.git/)[^"]*"[^}]*\}.*"status":(?:403|404)(?:,|\})',
+]
+
+# --- Postfix SASL auth failures ---
+[jails.postfix-sasl]
+enabled = false
+systemd_unit = "postfix.service"
+max_retries = 5
+find_time = "10m"
+ban_time = "1h"
+fail_regex = [
+    'warning: [^\s\[]+\[<HOST>\]: SASL (?:LOGIN|PLAIN|CRAM-MD5) authentication failed(?:[: ].*)?$',
+]
