@@ -52,7 +52,7 @@ jobs:
             dist/security/security-report.md
 
   build-binary:
-    name: Build Linux x86_64 Release Binary
+    name: Build Linux Release Binaries (x86_64 & aarch64, gnu & static musl)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -60,36 +60,68 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG || github.ref }}
 
-      - name: Build & extract release binary via Docker
+      - name: Build & extract all 4 release targets via Docker
         run: |
-          RUSTBAN_VERSION="${RELEASE_TAG#v}" ./scripts/build-docker.sh --extract
-          BIN_VER="$(./dist/rustban --version)"
-          echo "Built binary version: ${BIN_VER}"
-          if [[ -n "${RELEASE_TAG}" ]]; then
-            EXPECTED="rustban ${RELEASE_TAG#v}"
-            if [[ "${BIN_VER}" != "${EXPECTED}" ]]; then
-              echo "ERROR: Expected '${EXPECTED}', got '${BIN_VER}'" >&2
-              exit 1
-            fi
-          fi
+          RUSTBAN_VERSION="${RELEASE_TAG#v}" ./scripts/build-docker.sh --all-targets
 
-      - name: Package release archive & checksums
+          for target in x86_64-unknown-linux-gnu x86_64-unknown-linux-musl; do
+            BIN="dist/${target}/rustban"
+            BIN_VER="$("${BIN}" --version)"
+            echo "${target} version: ${BIN_VER}"
+            if [[ -n "${RELEASE_TAG}" ]]; then
+              EXPECTED="rustban ${RELEASE_TAG#v}"
+              if [[ "${BIN_VER}" != "${EXPECTED}" ]]; then
+                echo "ERROR: Expected '${EXPECTED}' for ${target}, got '${BIN_VER}'" >&2
+                exit 1
+              fi
+            fi
+          done
+
+          # Verify ELF architecture and static linkage for all 4 binaries
+          for target in x86_64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-gnu aarch64-unknown-linux-musl; do
+            INFO="$(file "dist/${target}/rustban")"
+            echo "${INFO}"
+            case "${target}" in
+              x86_64-*-musl)
+                echo "${INFO}" | grep -qE "x86-64.*(statically linked|static-pie linked)"
+                ;;
+              x86_64-*-gnu)
+                echo "${INFO}" | grep -q "x86-64"
+                ;;
+              aarch64-*-musl)
+                echo "${INFO}" | grep -qE "ARM aarch64.*(statically linked|static-pie linked)"
+                ;;
+              aarch64-*-gnu)
+                echo "${INFO}" | grep -q "ARM aarch64"
+                ;;
+            esac
+          done
+
+          # Smoke-test static musl binary inside Alpine (zero glibc)
+          docker run --rm -v "${PWD}/dist/x86_64-unknown-linux-musl/rustban:/usr/local/bin/rustban:ro" \
+            -v "${PWD}/rustban.toml.example:/etc/rustban/rustban.toml:ro" \
+            alpine:3.20 /usr/local/bin/rustban check -c /etc/rustban/rustban.toml
+
+      - name: Package release archives & checksums
         run: |
           TAG="${RELEASE_TAG:-${GITHUB_REF_NAME}}"
           STAGE="dist/release-assets"
-          PKG_DIR="dist/rustban-${TAG}-x86_64-unknown-linux-gnu"
-          mkdir -p "${STAGE}" "${PKG_DIR}"
+          mkdir -p "${STAGE}"
 
-          cp dist/rustban "${PKG_DIR}/rustban"
-          cp rustban.toml.example contrib/rustban.service LICENSE README.md "${PKG_DIR}/"
-          chmod 0755 "${PKG_DIR}/rustban"
+          for target in x86_64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-gnu aarch64-unknown-linux-musl; do
+            PKG_DIR="dist/rustban-${TAG}-${target}"
+            mkdir -p "${PKG_DIR}"
+            cp "dist/${target}/rustban" "${PKG_DIR}/rustban"
+            cp rustban.toml.example contrib/rustban.service LICENSE README.md "${PKG_DIR}/"
+            chmod 0755 "${PKG_DIR}/rustban"
 
-          tar -C dist -czf "${STAGE}/rustban-${TAG}-x86_64-unknown-linux-gnu.tar.gz" "rustban-${TAG}-x86_64-unknown-linux-gnu"
-          cp dist/rustban "${STAGE}/rustban-${TAG}-linux-x86_64"
+            tar -C dist -czf "${STAGE}/rustban-${TAG}-${target}.tar.gz" "rustban-${TAG}-${target}"
+            cp "dist/${target}/rustban" "${STAGE}/rustban-${TAG}-${target}"
+          done
 
           (
             cd "${STAGE}"
-            sha256sum "rustban-${TAG}-x86_64-unknown-linux-gnu.tar.gz" "rustban-${TAG}-linux-x86_64" > SHA256SUMS.txt
+            sha256sum rustban-"${TAG}"-* > SHA256SUMS.txt
           )
           ls -la "${STAGE}"
 

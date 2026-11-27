@@ -12,9 +12,15 @@ journalctl_bin = "/usr/bin/journalctl"
 table_name = "rustban"
 find_time = "10m"
 ban_time = "1h"
+# Optional: zero-DB per-jail progressive ban escalation (disabled when omitted or 1.0).
+# ban_time_multiplier = 2.0
+# ban_time_max = "24h"
+# ban_time_window = "24h"
 max_retries = 5
 max_tracked_ips = 65536
 max_line_bytes = 4096
+# Daemon log format: "text" (default) or "json" (NDJSON on stderr)
+# log_format = "text"
 
 # Includes 127.0.0.0/8, ::1/128, and fe80::/10 automatically in both userspace
 # and kernel nftables `return` rules before the drop rules.
@@ -23,6 +29,18 @@ include_default_ignores = true
 # Auto-detect and protect all of this host's own local interface IPs (/proc/net/*)
 # in both userspace and kernel whitelist sets so the host can never ban itself.
 ignore_self = true
+
+# Optional: periodically re-scan local interface IPs (e.g. for DHCP / WireGuard / Tailscale).
+# Disabled by default (zero periodic overhead when omitted).
+# ignore_self_refresh = "60s"
+
+# Optional: whitelist exact ingress interface names at the top of prerouting
+# (emits zero nftables rules when empty).
+ignore_interfaces = [
+    # "lo",
+    # "wg0",
+    # "tailscale0",
+]
 
 ignore_ips = [
     # "10.0.0.0/8",

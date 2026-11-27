@@ -372,6 +372,94 @@ assert len(d["bans"]) == 0, f"expected empty bans after unban, got: {d}"
 TEST_OUT="$(docker exec "${CONTAINER_NAME}" rustban test -c /tmp/rustban-e2e.toml /tmp/test-auth.log)"
 echo "${TEST_OUT}" | grep -q "matches=" || fail "rustban test output unexpected: ${TEST_OUT}"
 
+CHECK_OUT="$(docker exec "${CONTAINER_NAME}" rustban check -c /tmp/rustban-e2e.toml --strict)"
+echo "${CHECK_OUT}" | grep -q "Config OK:" || fail "rustban check output unexpected: ${CHECK_OUT}"
+
+# Verify SIGHUP live reload preserves active kernel bans, updates whitelist & ignore_interfaces, and rejects broken config safely
+docker exec "${CONTAINER_NAME}" rustban ban 198.51.100.42 -t 60s -r pre-reload >/dev/null
+docker exec "${CONTAINER_NAME}" /bin/sh -c 'cat > /tmp/rustban-e2e.toml << "TOML"
+[global]
+table_name = "rustban"
+find_time = "30s"
+ban_time = "5s"
+ban_time_multiplier = 2.0
+ban_time_max = "20s"
+ban_time_window = "60s"
+max_retries = 3
+include_default_ignores = true
+ignore_self = true
+ignore_self_refresh = "30s"
+ignore_ips = ["198.51.100.200/32"]
+ignore_interfaces = ["lo"]
+
+[jails.test-sshd]
+enabled = true
+log_path = "/tmp/test-auth.log"
+fail_regex = [
+  "Failed password for (?:invalid user )?.+ from <HOST> port \\d+ ssh2$"
+]
+TOML'
+docker exec "${CONTAINER_NAME}" /bin/sh -c 'kill -HUP 1'
+sleep 0.5
+docker exec "${CONTAINER_NAME}" rustban status --json | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+ips = [b["ip"] for b in d.get("bans", [])]
+wl = d.get("whitelist_v4", [])
+assert "198.51.100.42" in ips, f"SIGHUP lost active kernel ban! bans={ips}"
+assert "198.51.100.200" in wl or "198.51.100.200/32" in wl, f"SIGHUP did not apply updated whitelist_v4: {wl}"
+print("    Verified SIGHUP reload updated whitelist_v4 and preserved active kernel ban")
+' || fail "SIGHUP reload verification failed"
+docker exec "${CONTAINER_NAME}" nft list chain inet rustban prerouting | grep -q 'iifname' || fail "SIGHUP did not install iifname rule"
+
+# Verify progressive ban escalation (5s -> 10s -> 20s) in live kernel nftables timeouts
+for expected_ttl in 5 10 20; do
+  docker exec "${CONTAINER_NAME}" /bin/sh -c '
+    for p in 50001 50002 50003; do
+      echo "Failed password for invalid user root from 198.51.100.88 port ${p} ssh2" >> /tmp/test-auth.log
+    done
+  '
+  sleep 0.4
+  docker exec "${CONTAINER_NAME}" rustban status --json | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+matches = [b for b in d.get('bans', []) if b['ip'] == '198.51.100.88']
+assert len(matches) == 1, f'expected 198.51.100.88 banned, got: {d}'
+assert matches[0]['timeout_secs'] == ${expected_ttl}, f'expected escalated timeout=${expected_ttl}s, got: {matches[0]}'
+" || fail "Progressive ban escalation failed for expected timeout=${expected_ttl}s"
+done
+echo "    Verified progressive ban escalation in kernel nftables: 5s -> 10s -> 20s (capped)"
+
+# Verify Prometheus exposition output from CLI status
+PROM_OUT="$(docker exec "${CONTAINER_NAME}" rustban status --prometheus)"
+echo "${PROM_OUT}" | grep -q 'rustban_table_exists{table="rustban"} 1' || fail "Prometheus output missing table_exists: ${PROM_OUT}"
+echo "${PROM_OUT}" | grep -q 'rustban_active_bans{table="rustban",family="ipv4"}' || fail "Prometheus output missing active_bans: ${PROM_OUT}"
+echo "${PROM_OUT}" | grep -q 'rustban_dropped_packets_total{table="rustban",jail="test-sshd"}' || fail "Prometheus output missing dropped_packets_total: ${PROM_OUT}"
+echo "    Verified rustban status --prometheus metrics output"
+
+# Verify --log-format json emits valid NDJSON on stderr in dry-run
+docker exec "${CONTAINER_NAME}" /bin/sh -c 'timeout 1s rustban run -c /tmp/rustban-e2e.toml --dry-run --log-format json 2>&1 || true' | python3 -c '
+import json, sys
+events = []
+for line in sys.stdin:
+    line = line.strip()
+    if line.startswith("{"):
+        events.append(json.loads(line))
+assert any(e.get("event") == "init" and e.get("table") == "rustban" for e in events), f"missing JSON init event: {events}"
+print("    Verified --log-format json NDJSON daemon logging")
+' || fail "JSON log format verification failed"
+
+# Verify invalid config on SIGHUP is rejected without killing the daemon
+docker exec "${CONTAINER_NAME}" /bin/sh -c 'echo "not = [valid toml" > /tmp/rustban-e2e.toml && kill -HUP 1'
+sleep 0.4
+docker exec "${CONTAINER_NAME}" /bin/sh -c 'kill -0 1' || fail "Daemon exited after invalid SIGHUP config!"
+docker exec "${CONTAINER_NAME}" rustban status --json | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert any(b["ip"] == "198.51.100.42" for b in d.get("bans", [])), f"Daemon lost state after bad SIGHUP: {d}"
+print("    Verified invalid SIGHUP config rejected while keeping daemon & bans alive")
+' || fail "Invalid SIGHUP config check failed"
+
 docker exec "${CONTAINER_NAME}" rustban teardown >/dev/null
 docker exec "${CONTAINER_NAME}" rustban status --json | python3 -c '
 import json, sys
