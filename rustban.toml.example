@@ -19,6 +19,8 @@ ban_time = "1h"
 max_retries = 5
 max_tracked_ips = 65536
 max_line_bytes = 4096
+# Daemon log format: "text" (default) or "json" (NDJSON on stderr)
+# log_format = "text"
 
 # Includes 127.0.0.0/8, ::1/128, and fe80::/10 automatically in both userspace
 # and kernel nftables `return` rules before the drop rules.

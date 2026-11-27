@@ -3,9 +3,18 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use clap::ValueEnum;
 use serde::Deserialize;
 
 use crate::ip::IgnoreList;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    #[default]
+    Text,
+    Json,
+}
 
 pub const DEFAULT_NFT_BIN: &str = "/usr/sbin/nft";
 pub const DEFAULT_JOURNALCTL_BIN: &str = "/usr/bin/journalctl";
@@ -44,6 +53,7 @@ struct RawGlobal {
     include_default_ignores: Option<bool>,
     ignore_self: Option<bool>,
     ignore_self_refresh: Option<String>,
+    log_format: Option<LogFormat>,
     #[serde(default)]
     ignore_ips: Vec<String>,
     #[serde(default)]
@@ -119,6 +129,7 @@ pub struct Config {
     pub include_default_ignores: bool,
     pub ignore_self: bool,
     pub ignore_self_refresh: Option<Duration>,
+    pub log_format: LogFormat,
     pub raw_global_ignore_ips: Vec<String>,
     pub ignore_interfaces: Vec<String>,
     pub global_ignores: IgnoreList,
@@ -205,6 +216,7 @@ impl Config {
             Some(s) => Some(parse_duration_nonzero(s, "global.ignore_self_refresh")?),
             None => None,
         };
+        let log_format = parsed.global.log_format.unwrap_or_default();
         let mut ignore_interfaces = parsed.global.ignore_interfaces;
         for iface in &ignore_interfaces {
             validate_interface_name(iface, "global.ignore_interfaces")?;
@@ -359,6 +371,7 @@ impl Config {
             include_default_ignores: include_defaults,
             ignore_self,
             ignore_self_refresh,
+            log_format,
             raw_global_ignore_ips,
             ignore_interfaces,
             global_ignores,

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -473,6 +473,90 @@ pub fn parse_table_status(table_name: &str, json_str: &str) -> Result<TableStatu
     })
 }
 
+/// Format a `TableStatus` snapshot in Prometheus text exposition format (version 0.0.4).
+/// Reads straight from nftables state with zero HTTP server or daemon IPC.
+pub fn format_prometheus_metrics(status: &TableStatus) -> String {
+    let tbl = escape_prom_label(&status.table);
+    let mut out = String::with_capacity(512);
+
+    out.push_str("# HELP rustban_table_exists Whether the rustban nftables table exists (1 = yes, 0 = no).\n");
+    out.push_str("# TYPE rustban_table_exists gauge\n");
+    out.push_str(&format!(
+        "rustban_table_exists{{table=\"{tbl}\"}} {}\n",
+        if status.exists { 1 } else { 0 }
+    ));
+
+    let v4_bans = status.bans.iter().filter(|b| b.family == "ipv4").count();
+    let v6_bans = status.bans.iter().filter(|b| b.family == "ipv6").count();
+
+    out.push_str("# HELP rustban_active_bans Currently active bans in nftables sets.\n");
+    out.push_str("# TYPE rustban_active_bans gauge\n");
+    out.push_str(&format!(
+        "rustban_active_bans{{table=\"{tbl}\",family=\"ipv4\"}} {v4_bans}\n"
+    ));
+    out.push_str(&format!(
+        "rustban_active_bans{{table=\"{tbl}\",family=\"ipv6\"}} {v6_bans}\n"
+    ));
+
+    out.push_str(
+        "# HELP rustban_whitelist_entries Number of whitelisted CIDR entries in nftables sets.\n",
+    );
+    out.push_str("# TYPE rustban_whitelist_entries gauge\n");
+    out.push_str(&format!(
+        "rustban_whitelist_entries{{table=\"{tbl}\",family=\"ipv4\"}} {}\n",
+        status.whitelist_v4.len()
+    ));
+    out.push_str(&format!(
+        "rustban_whitelist_entries{{table=\"{tbl}\",family=\"ipv6\"}} {}\n",
+        status.whitelist_v6.len()
+    ));
+
+    let mut per_jail: BTreeMap<&str, (u64, u64)> = BTreeMap::new();
+    for b in &status.bans {
+        let jail = b.comment.as_deref().unwrap_or("unknown");
+        let entry = per_jail.entry(jail).or_insert((0, 0));
+        entry.0 = entry.0.saturating_add(b.packets);
+        entry.1 = entry.1.saturating_add(b.bytes);
+    }
+
+    out.push_str(
+        "# HELP rustban_dropped_packets_total Packets dropped by active nftables ban entries.\n",
+    );
+    out.push_str("# TYPE rustban_dropped_packets_total counter\n");
+    for (jail, (packets, _)) in &per_jail {
+        let j = escape_prom_label(jail);
+        out.push_str(&format!(
+            "rustban_dropped_packets_total{{table=\"{tbl}\",jail=\"{j}\"}} {packets}\n"
+        ));
+    }
+
+    out.push_str(
+        "# HELP rustban_dropped_bytes_total Bytes dropped by active nftables ban entries.\n",
+    );
+    out.push_str("# TYPE rustban_dropped_bytes_total counter\n");
+    for (jail, (_, bytes)) in &per_jail {
+        let j = escape_prom_label(jail);
+        out.push_str(&format!(
+            "rustban_dropped_bytes_total{{table=\"{tbl}\",jail=\"{j}\"}} {bytes}\n"
+        ));
+    }
+
+    out
+}
+
+fn escape_prom_label(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 fn format_whitelist_elem(v: &Value) -> Option<String> {
     if let Some(s) = v.as_str() {
         return Some(s.to_string());
@@ -693,5 +777,70 @@ mod tests {
         assert!(refresh.contains("flush set inet rustban whitelist_v4"));
         assert!(!refresh.contains("banned_v4"));
         assert!(!refresh.contains("flush chain"));
+    }
+
+    #[test]
+    fn formats_prometheus_metrics_with_escaped_labels() {
+        let status = TableStatus {
+            table: "rustban".into(),
+            exists: true,
+            whitelist_v4: vec!["127.0.0.0/8".into(), "10.0.0.0/8".into()],
+            whitelist_v6: vec!["::1".into()],
+            bans: vec![
+                BanEntry {
+                    ip: "203.0.113.1".into(),
+                    family: "ipv4".into(),
+                    timeout_secs: Some(3600),
+                    expires_secs: Some(3500),
+                    comment: Some("sshd".into()),
+                    packets: 10,
+                    bytes: 600,
+                },
+                BanEntry {
+                    ip: "2001:db8:1:2::/64".into(),
+                    family: "ipv6".into(),
+                    timeout_secs: Some(3600),
+                    expires_secs: Some(3500),
+                    comment: Some("sshd".into()),
+                    packets: 5,
+                    bytes: 400,
+                },
+                BanEntry {
+                    ip: "198.51.100.7".into(),
+                    family: "ipv4".into(),
+                    timeout_secs: Some(60),
+                    expires_secs: Some(50),
+                    comment: Some("quote\"slash\\jail".into()),
+                    packets: 2,
+                    bytes: 120,
+                },
+            ],
+        };
+
+        let prom = format_prometheus_metrics(&status);
+        assert!(prom.contains("rustban_table_exists{table=\"rustban\"} 1\n"));
+        assert!(prom.contains("rustban_active_bans{table=\"rustban\",family=\"ipv4\"} 2\n"));
+        assert!(prom.contains("rustban_active_bans{table=\"rustban\",family=\"ipv6\"} 1\n"));
+        assert!(prom.contains("rustban_whitelist_entries{table=\"rustban\",family=\"ipv4\"} 2\n"));
+        assert!(prom.contains("rustban_whitelist_entries{table=\"rustban\",family=\"ipv6\"} 1\n"));
+        assert!(
+            prom.contains("rustban_dropped_packets_total{table=\"rustban\",jail=\"sshd\"} 15\n")
+        );
+        assert!(
+            prom.contains("rustban_dropped_bytes_total{table=\"rustban\",jail=\"sshd\"} 1000\n")
+        );
+        assert!(prom.contains(
+            "rustban_dropped_packets_total{table=\"rustban\",jail=\"quote\\\"slash\\\\jail\"} 2\n"
+        ));
+
+        let missing = TableStatus {
+            table: "rustban".into(),
+            exists: false,
+            whitelist_v4: vec![],
+            whitelist_v6: vec![],
+            bans: vec![],
+        };
+        assert!(format_prometheus_metrics(&missing)
+            .contains("rustban_table_exists{table=\"rustban\"} 0\n"));
     }
 }
