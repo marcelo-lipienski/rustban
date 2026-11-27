@@ -382,6 +382,9 @@ docker exec "${CONTAINER_NAME}" /bin/sh -c 'cat > /tmp/rustban-e2e.toml << "TOML
 table_name = "rustban"
 find_time = "30s"
 ban_time = "5s"
+ban_time_multiplier = 2.0
+ban_time_max = "20s"
+ban_time_window = "60s"
 max_retries = 3
 include_default_ignores = true
 ignore_self = true
@@ -408,6 +411,24 @@ assert "198.51.100.200" in wl or "198.51.100.200/32" in wl, f"SIGHUP did not app
 print("    Verified SIGHUP reload updated whitelist_v4 and preserved active kernel ban")
 ' || fail "SIGHUP reload verification failed"
 docker exec "${CONTAINER_NAME}" nft list chain inet rustban prerouting | grep -q 'iifname' || fail "SIGHUP did not install iifname rule"
+
+# Verify progressive ban escalation (5s -> 10s -> 20s) in live kernel nftables timeouts
+for expected_ttl in 5 10 20; do
+  docker exec "${CONTAINER_NAME}" /bin/sh -c '
+    for p in 50001 50002 50003; do
+      echo "Failed password for invalid user root from 198.51.100.88 port ${p} ssh2" >> /tmp/test-auth.log
+    done
+  '
+  sleep 0.4
+  docker exec "${CONTAINER_NAME}" rustban status --json | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+matches = [b for b in d.get('bans', []) if b['ip'] == '198.51.100.88']
+assert len(matches) == 1, f'expected 198.51.100.88 banned, got: {d}'
+assert matches[0]['timeout_secs'] == ${expected_ttl}, f'expected escalated timeout=${expected_ttl}s, got: {matches[0]}'
+" || fail "Progressive ban escalation failed for expected timeout=${expected_ttl}s"
+done
+echo "    Verified progressive ban escalation in kernel nftables: 5s -> 10s -> 20s (capped)"
 
 # Verify invalid config on SIGHUP is rejected without killing the daemon
 docker exec "${CONTAINER_NAME}" /bin/sh -c 'echo "not = [valid toml" > /tmp/rustban-e2e.toml && kill -HUP 1'

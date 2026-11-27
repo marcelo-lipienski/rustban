@@ -12,6 +12,8 @@ pub const DEFAULT_JOURNALCTL_BIN: &str = "/usr/bin/journalctl";
 pub const DEFAULT_TABLE_NAME: &str = "rustban";
 pub const DEFAULT_FIND_TIME_SECS: u64 = 600;
 pub const DEFAULT_BAN_TIME_SECS: u64 = 3600;
+pub const DEFAULT_BAN_TIME_MAX_SECS: u64 = 86_400;
+pub const DEFAULT_BAN_TIME_WINDOW_SECS: u64 = 86_400;
 pub const DEFAULT_MAX_RETRIES: usize = 5;
 pub const DEFAULT_MAX_TRACKED_IPS: usize = 65_536;
 pub const DEFAULT_MAX_LINE_BYTES: usize = 4096;
@@ -33,6 +35,9 @@ struct RawGlobal {
     table_name: Option<String>,
     find_time: Option<String>,
     ban_time: Option<String>,
+    ban_time_multiplier: Option<f64>,
+    ban_time_max: Option<String>,
+    ban_time_window: Option<String>,
     max_retries: Option<usize>,
     max_tracked_ips: Option<usize>,
     max_line_bytes: Option<usize>,
@@ -57,6 +62,9 @@ struct RawJail {
     syslog_identifier: Option<String>,
     find_time: Option<String>,
     ban_time: Option<String>,
+    ban_time_multiplier: Option<f64>,
+    ban_time_max: Option<String>,
+    ban_time_window: Option<String>,
     max_retries: Option<usize>,
     max_tracked_ips: Option<usize>,
     #[serde(default)]
@@ -80,12 +88,20 @@ pub enum LogSourceKind {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BanEscalation {
+    pub multiplier: f64,
+    pub max_ban_time: Duration,
+    pub window: Duration,
+}
+
 #[derive(Debug, Clone)]
 pub struct JailConfig {
     pub name: String,
     pub source: LogSourceKind,
     pub find_time: Duration,
     pub ban_time: Duration,
+    pub escalation: Option<BanEscalation>,
     pub max_retries: usize,
     pub max_tracked_ips: usize,
     pub fail_regex: Vec<String>,
@@ -152,6 +168,18 @@ impl Config {
             Duration::from_secs(DEFAULT_BAN_TIME_SECS),
             "global.ban_time",
         )?;
+        let default_ban_multiplier = validate_opt_multiplier(
+            parsed.global.ban_time_multiplier,
+            "global.ban_time_multiplier",
+        )?;
+        let default_ban_max = match parsed.global.ban_time_max.as_deref() {
+            Some(s) => Some(parse_duration_nonzero(s, "global.ban_time_max")?),
+            None => None,
+        };
+        let default_ban_window = match parsed.global.ban_time_window.as_deref() {
+            Some(s) => Some(parse_duration_nonzero(s, "global.ban_time_window")?),
+            None => None,
+        };
         let default_max_retries = parsed.global.max_retries.unwrap_or(DEFAULT_MAX_RETRIES);
         if default_max_retries == 0 {
             return Err("global.max_retries must be >= 1".into());
@@ -250,6 +278,49 @@ impl Config {
                 default_ban_time,
                 &format!("jails.{name}.ban_time"),
             )?;
+            let jail_multiplier = match raw_jail.ban_time_multiplier {
+                Some(m) => Some(validate_multiplier(
+                    m,
+                    &format!("jails.{name}.ban_time_multiplier"),
+                )?),
+                None => default_ban_multiplier,
+            };
+            let jail_ban_max = match raw_jail.ban_time_max.as_deref() {
+                Some(s) => Some(parse_duration_nonzero(
+                    s,
+                    &format!("jails.{name}.ban_time_max"),
+                )?),
+                None => default_ban_max,
+            };
+            let jail_ban_window = match raw_jail.ban_time_window.as_deref() {
+                Some(s) => Some(parse_duration_nonzero(
+                    s,
+                    &format!("jails.{name}.ban_time_window"),
+                )?),
+                None => default_ban_window,
+            };
+            let escalation = match jail_multiplier {
+                Some(mult) if mult > 1.0 => {
+                    let max_ban_time = jail_ban_max.unwrap_or_else(|| {
+                        Duration::from_secs(DEFAULT_BAN_TIME_MAX_SECS).max(ban_time)
+                    });
+                    if max_ban_time < ban_time {
+                        return Err(format!(
+                            "jails.{name}.ban_time_max ({}s) must be >= ban_time ({}s)",
+                            max_ban_time.as_secs(),
+                            ban_time.as_secs()
+                        ));
+                    }
+                    let window = jail_ban_window
+                        .unwrap_or_else(|| Duration::from_secs(DEFAULT_BAN_TIME_WINDOW_SECS));
+                    Some(BanEscalation {
+                        multiplier: mult,
+                        max_ban_time,
+                        window,
+                    })
+                }
+                _ => None,
+            };
             let max_retries = raw_jail.max_retries.unwrap_or(default_max_retries);
             if max_retries == 0 {
                 return Err(format!("jails.{name}.max_retries must be >= 1"));
@@ -270,6 +341,7 @@ impl Config {
                 source,
                 find_time,
                 ban_time,
+                escalation,
                 max_retries,
                 max_tracked_ips,
                 fail_regex: raw_jail.fail_regex,
@@ -312,6 +384,22 @@ fn parse_opt_duration(
     match raw {
         Some(s) => parse_duration_nonzero(s, field),
         None => Ok(default),
+    }
+}
+
+fn validate_multiplier(val: f64, field: &str) -> Result<f64, String> {
+    if !val.is_finite() || val < 1.0 {
+        return Err(format!(
+            "{field} must be a finite number >= 1.0 (use 1.0 or omit to disable; got {val})"
+        ));
+    }
+    Ok(val)
+}
+
+fn validate_opt_multiplier(val: Option<f64>, field: &str) -> Result<Option<f64>, String> {
+    match val {
+        Some(v) => Ok(Some(validate_multiplier(v, field)?)),
+        None => Ok(None),
     }
 }
 
@@ -534,5 +622,56 @@ fail_regex = ['from <HOST>$']
                 "should reject bad syslog_identifier: {bad_ident:?}"
             );
         }
+    }
+
+    #[test]
+    fn parses_ban_escalation_inheritance_and_overrides() {
+        let toml = r#"
+[global]
+ban_time = "10m"
+ban_time_multiplier = 2.0
+ban_time_max = "2h"
+ban_time_window = "12h"
+
+[jails.inherits]
+log_path = "/tmp/a.log"
+fail_regex = ['from <HOST>$']
+
+[jails.disabled_escalation]
+log_path = "/tmp/b.log"
+ban_time_multiplier = 1.0
+fail_regex = ['from <HOST>$']
+
+[jails.custom]
+log_path = "/tmp/c.log"
+ban_time = "5m"
+ban_time_multiplier = 3.0
+ban_time_max = "1h"
+fail_regex = ['from <HOST>$']
+"#;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        let by_name = |n: &str| cfg.jails.iter().find(|j| j.name == n).unwrap();
+
+        let inh = by_name("inherits").escalation.unwrap();
+        assert_eq!(inh.multiplier, 2.0);
+        assert_eq!(inh.max_ban_time, Duration::from_secs(7200));
+        assert_eq!(inh.window, Duration::from_secs(43200));
+
+        assert!(by_name("disabled_escalation").escalation.is_none());
+
+        let cust = by_name("custom").escalation.unwrap();
+        assert_eq!(cust.multiplier, 3.0);
+        assert_eq!(cust.max_ban_time, Duration::from_secs(3600));
+        assert_eq!(cust.window, Duration::from_secs(43200));
+
+        // Rejects multiplier < 1.0 or ban_time_max < ban_time
+        assert!(Config::from_toml_str(
+            "[global]\nban_time_multiplier = 0.5\n[jails.a]\nlog_path = \"/tmp/a\"\nfail_regex = ['from <HOST>$']\n"
+        )
+        .is_err());
+        assert!(Config::from_toml_str(
+            "[jails.a]\nlog_path = \"/tmp/a\"\nban_time = \"1h\"\nban_time_multiplier = 2.0\nban_time_max = \"10m\"\nfail_regex = ['from <HOST>$']\n"
+        )
+        .is_err());
     }
 }

@@ -12,6 +12,10 @@ journalctl_bin = "/usr/bin/journalctl"
 table_name = "rustban"
 find_time = "10m"
 ban_time = "1h"
+# Optional: zero-DB per-jail progressive ban escalation (disabled when omitted or 1.0).
+# ban_time_multiplier = 2.0
+# ban_time_max = "24h"
+# ban_time_window = "24h"
 max_retries = 5
 max_tracked_ips = 65536
 max_line_bytes = 4096

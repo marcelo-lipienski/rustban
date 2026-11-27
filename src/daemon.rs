@@ -12,12 +12,13 @@ use crate::ip::{discover_local_interface_ips, is_unbannable_special, IgnoreList,
 use crate::matcher::JailMatcher;
 use crate::nft::NftClient;
 use crate::source::{spawn_file_tailer, spawn_journald_tailer, ChildRegistry, LogEvent};
-use crate::tracker::FailureTracker;
+use crate::tracker::{EscalationTracker, FailureTracker};
 
 struct CompiledJail {
     config: JailConfig,
     matcher: JailMatcher,
     tracker: FailureTracker,
+    escalation: Option<EscalationTracker>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -86,11 +87,21 @@ fn compile_jails_and_sources(config: &Config) -> Result<CompiledRuntime, String>
             jail_cfg.max_retries,
             jail_cfg.max_tracked_ips,
         );
+        let escalation = jail_cfg.escalation.map(|esc| {
+            EscalationTracker::new(
+                jail_cfg.ban_time,
+                esc.multiplier,
+                esc.max_ban_time,
+                esc.window,
+                jail_cfg.max_tracked_ips,
+            )
+        });
         let jail_idx = compiled_jails.len();
         compiled_jails.push(CompiledJail {
             config: jail_cfg.clone(),
             matcher,
             tracker,
+            escalation,
         });
 
         let key = match &jail_cfg.source {
@@ -344,6 +355,9 @@ fn run_daemon_inner(
             let now = Instant::now();
             for jail in &mut compiled_jails {
                 jail.tracker.prune(now);
+                if let Some(ref mut esc) = jail.escalation {
+                    esc.prune(now);
+                }
             }
             last_prune = now;
         }
@@ -428,13 +442,27 @@ fn process_log_event(
                     continue;
                 }
                 if jail.tracker.record_failure(key, now) {
-                    eprintln!(
-                        "[rustban] BAN jail={} ip={} timeout={}s",
-                        jail.config.name,
-                        key,
-                        jail.config.ban_time.as_secs()
-                    );
-                    pending_bans.push((key, jail.config.ban_time, jail.config.name.clone()));
+                    let (ban_time, strike) = match jail.escalation.as_mut() {
+                        Some(esc) => esc.record_ban(key, now),
+                        None => (jail.config.ban_time, 1),
+                    };
+                    if strike > 1 {
+                        eprintln!(
+                            "[rustban] BAN jail={} ip={} timeout={}s strike={}",
+                            jail.config.name,
+                            key,
+                            ban_time.as_secs(),
+                            strike
+                        );
+                    } else {
+                        eprintln!(
+                            "[rustban] BAN jail={} ip={} timeout={}s",
+                            jail.config.name,
+                            key,
+                            ban_time.as_secs()
+                        );
+                    }
+                    pending_bans.push((key, ban_time, jail.config.name.clone()));
                 }
             }
         }
