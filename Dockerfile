@@ -10,7 +10,9 @@ RUN mkdir -p src && echo 'fn main() {}' > src/main.rs && echo '' > src/lib.rs \
     && cargo build --release --locked \
     && rm -rf src
 
-# Copy full source and build release binary
+# Copy full source and build release binary (optional version override from release tag)
+ARG RUSTBAN_VERSION=""
+ENV RUSTBAN_VERSION=${RUSTBAN_VERSION}
 COPY src ./src
 RUN touch src/main.rs src/lib.rs && cargo build --release --locked
 

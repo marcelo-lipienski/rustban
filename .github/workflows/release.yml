@@ -40,7 +40,8 @@ jobs:
         run: cargo audit
 
       - name: Run live 8-vector rustban security gate
-        run: ./scripts/security-check-docker.sh --out-dir dist/security
+        run: |
+          RUSTBAN_VERSION="${RELEASE_TAG#v}" ./scripts/security-check-docker.sh --out-dir dist/security
 
       - name: Upload security report artifact
         uses: actions/upload-artifact@v4
@@ -60,7 +61,17 @@ jobs:
           ref: ${{ env.RELEASE_TAG || github.ref }}
 
       - name: Build & extract release binary via Docker
-        run: ./scripts/build-docker.sh --extract
+        run: |
+          RUSTBAN_VERSION="${RELEASE_TAG#v}" ./scripts/build-docker.sh --extract
+          BIN_VER="$(./dist/rustban --version)"
+          echo "Built binary version: ${BIN_VER}"
+          if [[ -n "${RELEASE_TAG}" ]]; then
+            EXPECTED="rustban ${RELEASE_TAG#v}"
+            if [[ "${BIN_VER}" != "${EXPECTED}" ]]; then
+              echo "ERROR: Expected '${EXPECTED}', got '${BIN_VER}'" >&2
+              exit 1
+            fi
+          fi
 
       - name: Package release archive & checksums
         run: |
@@ -98,7 +109,8 @@ jobs:
           ref: ${{ env.RELEASE_TAG || github.ref }}
 
       - name: Run Docker benchmark suite
-        run: ./scripts/bench-docker.sh
+        run: |
+          RUSTBAN_VERSION="${RELEASE_TAG#v}" ./scripts/bench-docker.sh
 
       - name: Upload benchmark results artifact
         uses: actions/upload-artifact@v4
@@ -136,10 +148,46 @@ jobs:
           name: benchmark-results
           path: _artifacts/benchmarks
 
-      - name: Copy updated benchmark results into workspace
+      - name: Copy updated benchmark results & sync Cargo version
         run: |
           cp _artifacts/benchmarks/results.json benchmarks/results.json
           cp _artifacts/benchmarks/RESULTS.md benchmarks/RESULTS.md
+          if [[ -n "${RELEASE_TAG}" ]]; then
+            python3 - "${RELEASE_TAG#v}" << 'PY'
+          import re, sys
+
+          ver = sys.argv[1]
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", ver):
+              print(f"Skipping Cargo.toml sync: '{ver}' is not a valid SemVer string")
+              sys.exit(0)
+
+          with open("Cargo.toml") as f:
+              toml_src = f.read()
+          new_toml, n_toml = re.subn(
+              r'(?ms)(\[package\].*?^version\s*=\s*")[^"]+(")',
+              rf"\g<1>{ver}\g<2>",
+              toml_src,
+              count=1,
+          )
+          assert n_toml == 1, "Could not locate [package] version in Cargo.toml"
+          with open("Cargo.toml", "w") as f:
+              f.write(new_toml)
+
+          with open("Cargo.lock") as f:
+              lock_src = f.read()
+          new_lock, n_lock = re.subn(
+              r'(?m)(^name = "rustban"\nversion = ")[^"]+(")',
+              rf"\g<1>{ver}\g<2>",
+              lock_src,
+              count=1,
+          )
+          assert n_lock == 1, "Could not locate rustban package version in Cargo.lock"
+          with open("Cargo.lock", "w") as f:
+              f.write(new_lock)
+
+          print(f"Synced Cargo.toml and Cargo.lock to version {ver}")
+          PY
+          fi
 
       - name: Upload release assets & append summary to Release notes
         if: env.RELEASE_TAG != ''
@@ -211,20 +259,23 @@ jobs:
       - name: Clean temporary artifact staging directory
         run: rm -rf _artifacts
 
-      - name: Open PR to update benchmarks on main
+      - name: Open PR to update benchmarks & version on main
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          branch: chore/benchmarks-${{ env.RELEASE_TAG || github.run_id }}
+          branch: chore/release-sync-${{ env.RELEASE_TAG || github.run_id }}
           delete-branch: true
-          commit-message: "chore(benchmarks): update results for ${{ env.RELEASE_TAG || github.ref_name }}"
-          title: "chore(benchmarks): update benchmark results for ${{ env.RELEASE_TAG || github.ref_name }}"
+          commit-message: "chore(release): sync version and benchmarks for ${{ env.RELEASE_TAG || github.ref_name }}"
+          title: "chore(release): sync version and benchmarks for ${{ env.RELEASE_TAG || github.ref_name }}"
           body: |
-            Automated benchmark results generated for release `${{ env.RELEASE_TAG || github.ref_name }}`.
+            Automated post-release sync generated for `${{ env.RELEASE_TAG || github.ref_name }}`.
 
+            - Synced `Cargo.toml` and `Cargo.lock` to the released SemVer version (if applicable)
             - Updated `benchmarks/results.json`
             - Updated `benchmarks/RESULTS.md`
             - Verified 8/8 `rustban` live security checks and `cargo audit` passed.
           add-paths: |
+            Cargo.toml
+            Cargo.lock
             benchmarks/results.json
             benchmarks/RESULTS.md

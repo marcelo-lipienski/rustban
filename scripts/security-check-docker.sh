@@ -41,7 +41,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> [1/4] Building release rustban E2E Docker image..."
-docker build --target e2e -t "${RUSTBAN_E2E_IMAGE}" "${ROOT_DIR}" >/dev/null
+docker build --target e2e --build-arg "RUSTBAN_VERSION=${RUSTBAN_VERSION:-}" -t "${RUSTBAN_E2E_IMAGE}" "${ROOT_DIR}" >/dev/null
 
 echo "==> [2/4] Running in-container live exploit suite (7 vectors) against rustban..."
 docker run --rm --cap-add=NET_ADMIN --entrypoint python3 \

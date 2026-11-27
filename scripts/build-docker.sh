@@ -22,7 +22,7 @@ for arg in "$@"; do
 done
 
 echo "==> Building release image '${IMAGE_TAG}' inside Docker..."
-docker build --target runtime -t "${IMAGE_TAG}" "${ROOT_DIR}"
+docker build --target runtime --build-arg "RUSTBAN_VERSION=${RUSTBAN_VERSION:-}" -t "${IMAGE_TAG}" "${ROOT_DIR}"
 
 if [[ "${EXTRACT}" -eq 1 ]]; then
   mkdir -p "${ROOT_DIR}/dist"

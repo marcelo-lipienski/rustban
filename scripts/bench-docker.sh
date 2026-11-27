@@ -11,8 +11,8 @@ RUSTBAN_BENCH_IMAGE="rustban-e2e:test"
 FAIL2BAN_BENCH_IMAGE="fail2ban-runtime:bench"
 
 echo "==> [1/4] Building Docker images (release mode rustban + official Debian fail2ban)..."
-docker build --target runtime -t "${RUSTBAN_RUNTIME_IMAGE}" "${ROOT_DIR}" >/dev/null
-docker build --target e2e -t "${RUSTBAN_BENCH_IMAGE}" "${ROOT_DIR}" >/dev/null
+docker build --target runtime --build-arg "RUSTBAN_VERSION=${RUSTBAN_VERSION:-}" -t "${RUSTBAN_RUNTIME_IMAGE}" "${ROOT_DIR}" >/dev/null
+docker build --target e2e --build-arg "RUSTBAN_VERSION=${RUSTBAN_VERSION:-}" -t "${RUSTBAN_BENCH_IMAGE}" "${ROOT_DIR}" >/dev/null
 docker build -f "${BENCH_DIR}/Dockerfile.fail2ban" -t "${FAIL2BAN_BENCH_IMAGE}" "${BENCH_DIR}" >/dev/null
 
 RUSTBAN_IMG_BYTES="$(docker image inspect -f '{{.Size}}' "${RUSTBAN_RUNTIME_IMAGE}")"

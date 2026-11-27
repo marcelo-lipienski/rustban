@@ -16,10 +16,21 @@ use rustban::nft::NftClient;
 
 const DEFAULT_CONFIG_PATH: &str = "/etc/rustban/rustban.toml";
 
+const VERSION: &str = match option_env!("RUSTBAN_VERSION") {
+    Some(v) => {
+        if v.is_empty() {
+            env!("CARGO_PKG_VERSION")
+        } else {
+            v
+        }
+    }
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 #[derive(Debug, Parser)]
 #[command(
     name = "rustban",
-    version,
+    version = VERSION,
     about = "Lightweight Fail2Ban replacement offloading ban expiration to Linux nftables timeout sets"
 )]
 struct Cli {
