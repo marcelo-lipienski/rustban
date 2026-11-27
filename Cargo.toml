@@ -1,6 +1,6 @@
 [package]
 name = "rustban"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Lightweight Fail2Ban replacement in Rust that offloads ban expiration to Linux nftables timeout sets — zero database, zero timers, lockout-proof."
 license = "MIT"
