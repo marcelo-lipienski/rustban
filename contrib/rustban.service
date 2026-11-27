@@ -6,7 +6,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+ExecStartPre=/usr/local/bin/rustban check -c /etc/rustban/rustban.toml
 ExecStart=/usr/local/bin/rustban run -c /etc/rustban/rustban.toml
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=3s
 

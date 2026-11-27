@@ -1,12 +1,14 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::net::IpAddr;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::config::{Config, JailConfig, LogSourceKind};
-use crate::ip::{is_unbannable_special, IpKey};
+use crate::ip::{discover_local_interface_ips, is_unbannable_special, IgnoreList, IpKey};
 use crate::matcher::JailMatcher;
 use crate::nft::NftClient;
 use crate::source::{spawn_file_tailer, spawn_journald_tailer, ChildRegistry, LogEvent};
@@ -27,18 +29,46 @@ enum SourceKey {
     },
 }
 
+struct ActiveTailers {
+    stop: Arc<AtomicBool>,
+    children: Arc<ChildRegistry>,
+    rx: mpsc::Receiver<LogEvent>,
+    handles: Vec<JoinHandle<()>>,
+}
+
+impl ActiveTailers {
+    fn shutdown(self) {
+        self.stop.store(true, Ordering::Relaxed);
+        self.children.kill_all();
+        drop(self.rx);
+        for h in self.handles {
+            let _ = h.join();
+        }
+    }
+}
+
 pub fn run_daemon(config: &Config, dry_run: bool) -> Result<(), String> {
+    run_daemon_inner(None, config, dry_run)
+}
+
+pub fn run_daemon_with_path(
+    config_path: &Path,
+    config: &Config,
+    dry_run: bool,
+) -> Result<(), String> {
+    run_daemon_inner(Some(config_path), config, dry_run)
+}
+
+struct CompiledRuntime {
+    jails: Vec<CompiledJail>,
+    sources: Vec<SourceKey>,
+    source_subscribers: Vec<Vec<usize>>,
+}
+
+fn compile_jails_and_sources(config: &Config) -> Result<CompiledRuntime, String> {
     if config.jails.is_empty() {
         return Err("no enabled jails found in configuration".into());
     }
-
-    let nft = NftClient::new(&config.nft_bin, &config.table_name, dry_run)?;
-    nft.init(&config.global_ignores)?;
-    eprintln!(
-        "[rustban] initialized nftables table 'inet {}' (dry_run={dry_run}, jails={})",
-        config.table_name,
-        config.jails.len()
-    );
 
     let mut compiled_jails = Vec::with_capacity(config.jails.len());
     let mut source_map: HashMap<SourceKey, usize> = HashMap::new();
@@ -86,12 +116,15 @@ pub fn run_daemon(config: &Config, dry_run: bool) -> Result<(), String> {
         source_subscribers[source_id].push(jail_idx);
     }
 
-    let shutdown = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&shutdown))
-        .map_err(|e| format!("failed to register SIGINT handler: {e}"))?;
-    signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&shutdown))
-        .map_err(|e| format!("failed to register SIGTERM handler: {e}"))?;
+    Ok(CompiledRuntime {
+        jails: compiled_jails,
+        sources,
+        source_subscribers,
+    })
+}
 
+fn spawn_tailers(config: &Config, sources: Vec<SourceKey>) -> ActiveTailers {
+    let stop = Arc::new(AtomicBool::new(false));
     let children = Arc::new(ChildRegistry::default());
     let (tx, rx) = mpsc::sync_channel::<LogEvent>(4096);
     let mut handles = Vec::with_capacity(sources.len());
@@ -104,7 +137,7 @@ pub fn run_daemon(config: &Config, dry_run: bool) -> Result<(), String> {
                     path,
                     true,
                     tx.clone(),
-                    Arc::clone(&shutdown),
+                    Arc::clone(&stop),
                 ));
             }
             SourceKey::Journald {
@@ -117,7 +150,7 @@ pub fn run_daemon(config: &Config, dry_run: bool) -> Result<(), String> {
                     units,
                     syslog_identifier,
                     tx.clone(),
-                    Arc::clone(&shutdown),
+                    Arc::clone(&stop),
                     Arc::clone(&children),
                 ));
             }
@@ -125,14 +158,110 @@ pub fn run_daemon(config: &Config, dry_run: bool) -> Result<(), String> {
     }
     drop(tx);
 
+    ActiveTailers {
+        stop,
+        children,
+        rx,
+        handles,
+    }
+}
+
+fn run_daemon_inner(
+    config_path: Option<&Path>,
+    initial_config: &Config,
+    dry_run: bool,
+) -> Result<(), String> {
+    let CompiledRuntime {
+        jails: mut compiled_jails,
+        sources: initial_sources,
+        mut source_subscribers,
+    } = compile_jails_and_sources(initial_config)?;
+    let mut active_cfg = initial_config.clone();
+
+    let mut nft = NftClient::new(&active_cfg.nft_bin, &active_cfg.table_name, dry_run)?;
+    nft.init_with_interfaces(&active_cfg.global_ignores, &active_cfg.ignore_interfaces)?;
+    eprintln!(
+        "[rustban] initialized nftables table 'inet {}' (dry_run={dry_run}, jails={}, ignore_interfaces={})",
+        active_cfg.table_name,
+        active_cfg.jails.len(),
+        active_cfg.ignore_interfaces.len()
+    );
+
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let reload_requested = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&shutdown))
+        .map_err(|e| format!("failed to register SIGINT handler: {e}"))?;
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&shutdown))
+        .map_err(|e| format!("failed to register SIGTERM handler: {e}"))?;
+    signal_hook::flag::register(signal_hook::consts::SIGHUP, Arc::clone(&reload_requested))
+        .map_err(|e| format!("failed to register SIGHUP handler: {e}"))?;
+
+    let mut tailers = spawn_tailers(&active_cfg, initial_sources);
+
     let mut last_prune = Instant::now();
     let prune_interval = Duration::from_secs(60);
+
+    // Only read /proc/net/* periodically when the user explicitly opted into ignore_self_refresh.
+    let mut last_local_ips: Vec<IpAddr> =
+        if active_cfg.ignore_self && active_cfg.ignore_self_refresh.is_some() {
+            discover_local_interface_ips()
+        } else {
+            Vec::new()
+        };
+    let mut last_self_refresh = Instant::now();
+
     const MAX_EVENTS_PER_BATCH: usize = 4096;
     const MAX_BANS_PER_BATCH: usize = 256;
     let mut pending_bans: Vec<(IpKey, Duration, String)> = Vec::new();
 
     while !shutdown.load(Ordering::Relaxed) {
-        match rx.recv_timeout(Duration::from_millis(500)) {
+        if reload_requested.swap(false, Ordering::AcqRel) {
+            if let Some(path) = config_path {
+                match reload_configuration(path, &active_cfg, dry_run) {
+                    Ok(ReloadOutcome {
+                        config: new_cfg,
+                        nft: new_nft,
+                        runtime:
+                            CompiledRuntime {
+                                jails: new_jails,
+                                sources: new_sources,
+                                source_subscribers: new_subs,
+                            },
+                    }) => {
+                        tailers.shutdown();
+                        tailers = spawn_tailers(&new_cfg, new_sources);
+                        active_cfg = new_cfg;
+                        nft = new_nft;
+                        compiled_jails = new_jails;
+                        source_subscribers = new_subs;
+                        last_local_ips =
+                            if active_cfg.ignore_self && active_cfg.ignore_self_refresh.is_some() {
+                                discover_local_interface_ips()
+                            } else {
+                                Vec::new()
+                            };
+                        last_self_refresh = Instant::now();
+                        eprintln!(
+                            "[rustban] reloaded config from '{}' (jails={}, whitelisted_v4={}, whitelisted_v6={}, ignore_interfaces={})",
+                            path.display(),
+                            active_cfg.jails.len(),
+                            active_cfg.global_ignores.v4_cidrs().len(),
+                            active_cfg.global_ignores.v6_cidrs().len(),
+                            active_cfg.ignore_interfaces.len()
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[rustban] ERROR SIGHUP reload rejected (keeping previous config active): {e}"
+                        );
+                    }
+                }
+            } else {
+                eprintln!("[rustban] warn: SIGHUP received but daemon has no config file path");
+            }
+        }
+
+        match tailers.rx.recv_timeout(Duration::from_millis(250)) {
             Ok(first_event) => {
                 let now = Instant::now();
                 pending_bans.clear();
@@ -148,7 +277,7 @@ pub fn run_daemon(config: &Config, dry_run: bool) -> Result<(), String> {
                 // a single atomic `nft -f -` transaction while single bans flush immediately.
                 let mut drained = 1usize;
                 while drained < MAX_EVENTS_PER_BATCH && pending_bans.len() < MAX_BANS_PER_BATCH {
-                    match rx.try_recv() {
+                    match tailers.rx.try_recv() {
                         Ok(ev) => {
                             drained += 1;
                             process_log_event(
@@ -185,6 +314,32 @@ pub fn run_daemon(config: &Config, dry_run: bool) -> Result<(), String> {
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
+        if active_cfg.ignore_self {
+            if let Some(refresh_interval) = active_cfg.ignore_self_refresh {
+                if last_self_refresh.elapsed() >= refresh_interval {
+                    last_self_refresh = Instant::now();
+                    let current_local_ips = discover_local_interface_ips();
+                    if current_local_ips != last_local_ips {
+                        match refresh_self_ignores(&mut active_cfg, &mut compiled_jails, &nft) {
+                            Ok(()) => {
+                                last_local_ips = current_local_ips;
+                                eprintln!(
+                                    "[rustban] refreshed ignore_self whitelist (whitelisted_v4={}, whitelisted_v6={})",
+                                    active_cfg.global_ignores.v4_cidrs().len(),
+                                    active_cfg.global_ignores.v6_cidrs().len()
+                                );
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[rustban] ERROR failed to refresh ignore_self whitelist: {e}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if last_prune.elapsed() >= prune_interval {
             let now = Instant::now();
             for jail in &mut compiled_jails {
@@ -196,14 +351,60 @@ pub fn run_daemon(config: &Config, dry_run: bool) -> Result<(), String> {
 
     eprintln!(
         "[rustban] shutting down (preserving active bans in kernel table 'inet {}')",
-        config.table_name
+        active_cfg.table_name
     );
-    shutdown.store(true, Ordering::Relaxed);
-    children.kill_all();
-    drop(rx);
-    for h in handles {
-        let _ = h.join();
+    tailers.shutdown();
+    Ok(())
+}
+
+struct ReloadOutcome {
+    config: Config,
+    nft: NftClient,
+    runtime: CompiledRuntime,
+}
+
+fn reload_configuration(
+    config_path: &Path,
+    current_cfg: &Config,
+    dry_run: bool,
+) -> Result<ReloadOutcome, String> {
+    let new_cfg = Config::from_file(config_path)?;
+    if new_cfg.table_name != current_cfg.table_name {
+        return Err(format!(
+            "cannot change global.table_name on SIGHUP ('{}' -> '{}'); restart rustban instead",
+            current_cfg.table_name, new_cfg.table_name
+        ));
     }
+    let runtime = compile_jails_and_sources(&new_cfg)?;
+    let new_nft = NftClient::new(&new_cfg.nft_bin, &new_cfg.table_name, dry_run)?;
+    new_nft.init_with_interfaces(&new_cfg.global_ignores, &new_cfg.ignore_interfaces)?;
+    Ok(ReloadOutcome {
+        config: new_cfg,
+        nft: new_nft,
+        runtime,
+    })
+}
+
+fn refresh_self_ignores(
+    active_cfg: &mut Config,
+    compiled_jails: &mut [CompiledJail],
+    nft: &NftClient,
+) -> Result<(), String> {
+    let new_global = IgnoreList::from_options(
+        &active_cfg.raw_global_ignore_ips,
+        active_cfg.include_default_ignores,
+        true,
+    )?;
+    nft.refresh_whitelists(&new_global)?;
+    for jail in compiled_jails.iter_mut() {
+        let mut updated = new_global.clone();
+        if !jail.config.raw_ignore_ips.is_empty() {
+            let extra = IgnoreList::from_strings(&jail.config.raw_ignore_ips, false)?;
+            updated.extend_from(&extra);
+        }
+        jail.config.ignore_ips = updated;
+    }
+    active_cfg.global_ignores = new_global;
     Ok(())
 }
 

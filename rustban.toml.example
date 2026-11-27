@@ -24,6 +24,18 @@ include_default_ignores = true
 # in both userspace and kernel whitelist sets so the host can never ban itself.
 ignore_self = true
 
+# Optional: periodically re-scan local interface IPs (e.g. for DHCP / WireGuard / Tailscale).
+# Disabled by default (zero periodic overhead when omitted).
+# ignore_self_refresh = "60s"
+
+# Optional: whitelist exact ingress interface names at the top of prerouting
+# (emits zero nftables rules when empty).
+ignore_interfaces = [
+    # "lo",
+    # "wg0",
+    # "tailscale0",
+]
+
 ignore_ips = [
     # "10.0.0.0/8",
     # "192.168.0.0/16",

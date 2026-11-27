@@ -375,6 +375,51 @@ echo "${TEST_OUT}" | grep -q "matches=" || fail "rustban test output unexpected:
 CHECK_OUT="$(docker exec "${CONTAINER_NAME}" rustban check -c /tmp/rustban-e2e.toml --strict)"
 echo "${CHECK_OUT}" | grep -q "Config OK:" || fail "rustban check output unexpected: ${CHECK_OUT}"
 
+# Verify SIGHUP live reload preserves active kernel bans, updates whitelist & ignore_interfaces, and rejects broken config safely
+docker exec "${CONTAINER_NAME}" rustban ban 198.51.100.42 -t 60s -r pre-reload >/dev/null
+docker exec "${CONTAINER_NAME}" /bin/sh -c 'cat > /tmp/rustban-e2e.toml << "TOML"
+[global]
+table_name = "rustban"
+find_time = "30s"
+ban_time = "5s"
+max_retries = 3
+include_default_ignores = true
+ignore_self = true
+ignore_self_refresh = "30s"
+ignore_ips = ["198.51.100.200/32"]
+ignore_interfaces = ["lo"]
+
+[jails.test-sshd]
+enabled = true
+log_path = "/tmp/test-auth.log"
+fail_regex = [
+  "Failed password for (?:invalid user )?.+ from <HOST> port \\d+ ssh2$"
+]
+TOML'
+docker exec "${CONTAINER_NAME}" /bin/sh -c 'kill -HUP 1'
+sleep 0.5
+docker exec "${CONTAINER_NAME}" rustban status --json | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+ips = [b["ip"] for b in d.get("bans", [])]
+wl = d.get("whitelist_v4", [])
+assert "198.51.100.42" in ips, f"SIGHUP lost active kernel ban! bans={ips}"
+assert "198.51.100.200" in wl or "198.51.100.200/32" in wl, f"SIGHUP did not apply updated whitelist_v4: {wl}"
+print("    Verified SIGHUP reload updated whitelist_v4 and preserved active kernel ban")
+' || fail "SIGHUP reload verification failed"
+docker exec "${CONTAINER_NAME}" nft list chain inet rustban prerouting | grep -q 'iifname' || fail "SIGHUP did not install iifname rule"
+
+# Verify invalid config on SIGHUP is rejected without killing the daemon
+docker exec "${CONTAINER_NAME}" /bin/sh -c 'echo "not = [valid toml" > /tmp/rustban-e2e.toml && kill -HUP 1'
+sleep 0.4
+docker exec "${CONTAINER_NAME}" /bin/sh -c 'kill -0 1' || fail "Daemon exited after invalid SIGHUP config!"
+docker exec "${CONTAINER_NAME}" rustban status --json | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert any(b["ip"] == "198.51.100.42" for b in d.get("bans", [])), f"Daemon lost state after bad SIGHUP: {d}"
+print("    Verified invalid SIGHUP config rejected while keeping daemon & bans alive")
+' || fail "Invalid SIGHUP config check failed"
+
 docker exec "${CONTAINER_NAME}" rustban teardown >/dev/null
 docker exec "${CONTAINER_NAME}" rustban status --json | python3 -c '
 import json, sys
