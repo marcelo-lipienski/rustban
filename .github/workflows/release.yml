@@ -260,7 +260,7 @@ jobs:
         run: rm -rf _artifacts
 
       - name: Open PR to update benchmarks & version on main
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: chore/release-sync-${{ env.RELEASE_TAG || github.run_id }}
