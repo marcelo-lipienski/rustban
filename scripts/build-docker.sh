@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE_TAG="${RUSTBAN_IMAGE:-rustban:latest}"
 CROSS_IMAGE_TAG="rustban-cross:build"
-ALL_TARGETS="x86_64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-gnu aarch64-unknown-linux-musl"
+ALL_TARGETS="x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
 
 EXTRACT=0
 CROSS_TARGETS=""
@@ -30,10 +30,10 @@ while [[ $# -gt 0 ]]; do
     -h|--help)
       echo "Usage: $0 [--extract] [--target <triple>] [--all-targets]"
       echo "  Builds rustban in --release mode exclusively inside Docker."
-      echo "  --extract          Copy the compiled native release binary from the runtime image to ./dist/rustban"
-      echo "  --target <triple>  Cross-compile a specific target into ./dist/<triple>/rustban"
+      echo "  --extract          Copy the compiled static musl release binary from the runtime image to ./dist/rustban"
+      echo "  --target <triple>  Cross-compile a specific static musl target into ./dist/<triple>/rustban"
       echo "                     Supported: ${ALL_TARGETS}"
-      echo "  --all-targets      Cross-compile all 4 release targets (x86_64/aarch64 x gnu/musl) into ./dist/<triple>/rustban"
+      echo "  --all-targets      Cross-compile all static musl release targets (x86_64 & aarch64) into ./dist/<triple>/rustban"
       exit 0
       ;;
     *)

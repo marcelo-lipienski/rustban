@@ -17,15 +17,15 @@ Lightweight Fail2Ban replacement in Rust that offloads ban expiration to Linux `
   - Survives daemon restarts, stops, and live `SIGHUP` config reloads (`table inet rustban` and remaining kernel TTLs stay intact until explicitly cleared with `flush` or `teardown`).
 - **Dual log sources & explicit TOML regexes**: tails plain log files (handling inode rotation and `copytruncate`) and `systemd-journald` units/identifiers (`systemd_unit`, `systemd_units`, `syslog_identifier`) with bounded line buffers, matching with Rust's linear-time ReDoS-safe `regex` crate.
 
-## Building (Docker Release Only)
+## Building (Docker Static `musl` Release Only)
 
-All compilation runs in release mode inside Docker — never locally:
+All compilation runs in release mode inside Docker producing fully static Linux `musl` binaries (zero `glibc` dependency) packaged in a minimal Alpine `nftables` runtime image:
 
 ```bash
 ./scripts/build-docker.sh
 ```
 
-To extract the compiled native Linux release binary into `./dist/rustban`, or cross-compile all 4 release targets (`x86_64`/`aarch64` × `gnu`/`static musl`):
+To extract the compiled static `musl` release binary into `./dist/rustban`, or cross-compile both Linux release targets (`x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`):
 
 ```bash
 ./scripts/build-docker.sh --extract
@@ -47,6 +47,7 @@ Reproducible head-to-head Docker benchmarks and live exploit tests comparing `ru
 
 ```bash
 ./scripts/bench-docker.sh             # Performance & resource benchmarks vs fail2ban
+./scripts/stress-docker.sh            # 8-file concurrent distributed scan stress test (80k IPs, 408 bans)
 ./scripts/security-check-docker.sh    # Live 8-vector rustban-only security gate (asserts 8/8 protected)
 ./scripts/security-compare-docker.sh  # Live 8-vector security comparison vs fail2ban
 ```
