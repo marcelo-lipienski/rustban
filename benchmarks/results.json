@@ -1,9 +1,9 @@
 {
-  "generated_at_utc": "2026-11-27T03:59:53Z",
+  "generated_at_utc": "2026-11-27T10:48:05Z",
   "environment": {
     "kernel": "7.0.0-1020-azure",
     "arch": "x86_64",
-    "cpu_model": "AMD EPYC 9V45 96-Core Processor",
+    "cpu_model": "AMD EPYC 9V74 80-Core Processor",
     "cpu_cores": 4,
     "docker_version": "29.4.2",
     "container_base": "debian:bookworm-slim"
@@ -11,51 +11,51 @@
   "rustban": {
     "target": "rustban",
     "meta": {
-      "tool_version": "rustban 0.1.0",
+      "tool_version": "rustban 0.2.0",
       "nft_version": "nftables v1.0.6 (Lester Gooch #5)",
-      "binary_bytes": 2291680,
-      "runtime_image_bytes": 33213381
+      "binary_bytes": 2371992,
+      "runtime_image_bytes": 33248327
     },
     "startup_and_idle": {
       "cold_startup_ms_runs": [
-        11.43,
-        9.49,
-        9.34,
-        9.48,
-        11.31
+        11.28,
+        15.69,
+        15.48,
+        16.51,
+        14.5
       ],
-      "cold_startup_ms_median": 9.49,
-      "cold_startup_ms_min": 9.34,
+      "cold_startup_ms_median": 15.48,
+      "cold_startup_ms_min": 11.28,
       "idle_memory": {
-        "rss_kib": 4396,
-        "hwm_kib": 4396,
-        "pss_kib": 3630,
+        "rss_kib": 4380,
+        "hwm_kib": 4380,
+        "pss_kib": 3678,
         "threads": 3
       }
     },
     "single_ip_latency": {
       "trials": 20,
-      "min_ms": 5.13,
-      "p50_ms": 6.48,
-      "mean_ms": 7.57,
-      "p95_ms": 9.94,
-      "max_ms": 11.8
+      "min_ms": 5.33,
+      "p50_ms": 11.84,
+      "mean_ms": 10.38,
+      "p95_ms": 13.92,
+      "max_ms": 15.93
     },
     "noise_throughput_100k": {
       "lines": 100000,
       "payload_mb": 10.11,
-      "wall_secs": 0.0264,
-      "lines_per_sec": 3792260.9,
+      "wall_secs": 0.0424,
+      "lines_per_sec": 2360887.8,
       "memory": {
-        "rss_kib": 4676,
-        "hwm_kib": 4676,
-        "pss_kib": 3898,
+        "rss_kib": 4356,
+        "hwm_kib": 4356,
+        "pss_kib": 3656,
         "threads": 3
       },
       "cpu": {
-        "self_cpu_ms": 30.0,
+        "self_cpu_ms": 60.0,
         "child_cpu_ms": 0.0,
-        "total_cpu_ms": 30.0
+        "total_cpu_ms": 60.0
       }
     },
     "attack_burst_200": {
@@ -63,51 +63,51 @@
       "bans_triggered": 200,
       "unique_scanners_tracked": 5000,
       "noise_lines": 10000,
-      "wall_secs": 0.0267,
-      "bans_per_sec": 7480.5,
+      "wall_secs": 0.0298,
+      "bans_per_sec": 6708.5,
       "memory": {
-        "rss_kib": 6088,
-        "hwm_kib": 6088,
-        "pss_kib": 5382,
+        "rss_kib": 6340,
+        "hwm_kib": 6340,
+        "pss_kib": 5614,
         "threads": 3
       },
       "cpu": {
-        "self_cpu_ms": 10.0,
+        "self_cpu_ms": 20.0,
         "child_cpu_ms": 0.0,
-        "total_cpu_ms": 10.0
+        "total_cpu_ms": 20.0
       },
-      "cli_status_ms_median": 4.03,
-      "cli_status_ms_min": 4.0
+      "cli_status_ms_median": 4.95,
+      "cli_status_ms_min": 4.9
     },
     "spoofed_ip_flood_50k": {
       "unique_ips": 50000,
-      "wall_secs": 0.1504,
-      "ips_per_sec": 332336.3,
+      "wall_secs": 0.1902,
+      "ips_per_sec": 262898.2,
       "memory": {
-        "rss_kib": 13436,
-        "hwm_kib": 13436,
-        "pss_kib": 12732,
+        "rss_kib": 13576,
+        "hwm_kib": 13576,
+        "pss_kib": 12866,
         "threads": 3
       },
       "cpu": {
-        "self_cpu_ms": 210.0,
+        "self_cpu_ms": 250.0,
         "child_cpu_ms": 0.0,
-        "total_cpu_ms": 210.0
+        "total_cpu_ms": 250.0
       }
     },
     "ban_expiration_100": {
       "bans_expired": 100,
       "configured_ban_time_secs": 5,
-      "drain_wall_secs": 5.028,
+      "drain_wall_secs": 5.042,
       "expiration_cpu": {
         "self_cpu_ms": 0.0,
         "child_cpu_ms": 0.0,
         "total_cpu_ms": 0.0
       },
       "post_expiry_memory": {
-        "rss_kib": 4348,
-        "hwm_kib": 4348,
-        "pss_kib": 3602,
+        "rss_kib": 4504,
+        "hwm_kib": 4504,
+        "pss_kib": 3792,
         "threads": 3
       }
     },
@@ -115,12 +115,12 @@
       "total_lines": 100000,
       "matched_lines": 10000,
       "runs_secs": [
-        0.0305,
-        0.0308,
-        0.0297
+        0.0413,
+        0.0418,
+        0.0408
       ],
-      "median_secs": 0.0305,
-      "lines_per_sec": 3278688.5
+      "median_secs": 0.0413,
+      "lines_per_sec": 2421307.5
     }
   },
   "fail2ban": {
@@ -129,48 +129,48 @@
       "tool_version": "Fail2Ban v1.0.2 (Python 3.11.2)",
       "nft_version": "nftables v1.0.6 (Lester Gooch #5)",
       "installed_pkg_bytes": 23949312,
-      "runtime_image_bytes": 45480556
+      "runtime_image_bytes": 45480504
     },
     "startup_and_idle": {
       "cold_startup_ms_runs": [
-        177.21,
-        174.4,
-        124.24,
-        126.68,
-        125.75
+        195.53,
+        195.06,
+        195.17,
+        194.39,
+        195.46
       ],
-      "cold_startup_ms_median": 126.68,
-      "cold_startup_ms_min": 124.24,
+      "cold_startup_ms_median": 195.17,
+      "cold_startup_ms_min": 194.39,
       "idle_memory": {
-        "rss_kib": 18096,
-        "hwm_kib": 18096,
-        "pss_kib": 15476,
+        "rss_kib": 18064,
+        "hwm_kib": 18064,
+        "pss_kib": 15352,
         "threads": 5
       }
     },
     "single_ip_latency": {
       "trials": 20,
-      "min_ms": 152.06,
-      "p50_ms": 154.2,
-      "mean_ms": 166.44,
-      "p95_ms": 155.41,
-      "max_ms": 401.41
+      "min_ms": 153.74,
+      "p50_ms": 155.25,
+      "mean_ms": 167.83,
+      "p95_ms": 156.79,
+      "max_ms": 406.14
     },
     "noise_throughput_100k": {
       "lines": 100000,
       "payload_mb": 10.11,
-      "wall_secs": 1.0772,
-      "lines_per_sec": 92832.9,
+      "wall_secs": 1.6527,
+      "lines_per_sec": 60506.6,
       "memory": {
-        "rss_kib": 19912,
-        "hwm_kib": 19912,
-        "pss_kib": 17136,
+        "rss_kib": 19904,
+        "hwm_kib": 19904,
+        "pss_kib": 17102,
         "threads": 5
       },
       "cpu": {
-        "self_cpu_ms": 1070.0,
-        "child_cpu_ms": 10.0,
-        "total_cpu_ms": 1080.0
+        "self_cpu_ms": 1400.0,
+        "child_cpu_ms": 0.0,
+        "total_cpu_ms": 1400.0
       }
     },
     "attack_burst_200": {
@@ -178,51 +178,51 @@
       "bans_triggered": 200,
       "unique_scanners_tracked": 5000,
       "noise_lines": 10000,
-      "wall_secs": 1.2511,
-      "bans_per_sec": 159.9,
+      "wall_secs": 1.3416,
+      "bans_per_sec": 149.1,
       "memory": {
-        "rss_kib": 27016,
-        "hwm_kib": 27016,
-        "pss_kib": 24188,
+        "rss_kib": 26668,
+        "hwm_kib": 26668,
+        "pss_kib": 23896,
         "threads": 5
       },
       "cpu": {
-        "self_cpu_ms": 660.0,
-        "child_cpu_ms": 680.0,
-        "total_cpu_ms": 1340.0
+        "self_cpu_ms": 790.0,
+        "child_cpu_ms": 760.0,
+        "total_cpu_ms": 1550.0
       },
-      "cli_status_ms_median": 38.18,
-      "cli_status_ms_min": 35.34
+      "cli_status_ms_median": 44.19,
+      "cli_status_ms_min": 43.49
     },
     "spoofed_ip_flood_50k": {
       "unique_ips": 50000,
-      "wall_secs": 1.5108,
-      "ips_per_sec": 33095.7,
+      "wall_secs": 2.3268,
+      "ips_per_sec": 21488.6,
       "memory": {
-        "rss_kib": 73064,
-        "hwm_kib": 73064,
-        "pss_kib": 70310,
+        "rss_kib": 71644,
+        "hwm_kib": 71644,
+        "pss_kib": 68874,
         "threads": 5
       },
       "cpu": {
-        "self_cpu_ms": 1470.0,
+        "self_cpu_ms": 1680.0,
         "child_cpu_ms": 10.0,
-        "total_cpu_ms": 1480.0
+        "total_cpu_ms": 1690.0
       }
     },
     "ban_expiration_100": {
       "bans_expired": 100,
       "configured_ban_time_secs": 5,
-      "drain_wall_secs": 4.792,
+      "drain_wall_secs": 5.123,
       "expiration_cpu": {
-        "self_cpu_ms": 120.0,
-        "child_cpu_ms": 290.0,
-        "total_cpu_ms": 410.0
+        "self_cpu_ms": 130.0,
+        "child_cpu_ms": 350.0,
+        "total_cpu_ms": 480.0
       },
       "post_expiry_memory": {
-        "rss_kib": 20324,
-        "hwm_kib": 20324,
-        "pss_kib": 17602,
+        "rss_kib": 20244,
+        "hwm_kib": 20244,
+        "pss_kib": 17418,
         "threads": 5
       }
     },
@@ -230,12 +230,12 @@
       "total_lines": 100000,
       "matched_lines": 10000,
       "runs_secs": [
-        1.174,
-        1.2014,
-        1.1859
+        1.5345,
+        1.525,
+        1.5169
       ],
-      "median_secs": 1.1859,
-      "lines_per_sec": 84324.1
+      "median_secs": 1.525,
+      "lines_per_sec": 65573.8
     }
   }
 }
