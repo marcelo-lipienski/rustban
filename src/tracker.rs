@@ -129,6 +129,124 @@ impl FailureTracker {
     }
 }
 
+/// Optional per-jail bounded in-memory repeat-offender strike tracker.
+///
+/// Escalates ban duration as `min(base_ban_time * multiplier^(strike - 1), max_ban_time)`
+/// while repeat bans occur within `window`. Only instantiated when `ban_time_multiplier > 1.0`
+/// (zero overhead when disabled). Uses the same amortized O(1) eviction bound as `FailureTracker`.
+#[derive(Debug)]
+pub struct EscalationTracker {
+    base_ban_time: Duration,
+    multiplier: f64,
+    max_ban_time: Duration,
+    window: Duration,
+    max_tracked_ips: usize,
+    strikes: HashMap<IpKey, (u32, Instant)>,
+    order: VecDeque<(IpKey, Instant)>,
+    last_prune: Option<Instant>,
+}
+
+impl EscalationTracker {
+    pub fn new(
+        base_ban_time: Duration,
+        multiplier: f64,
+        max_ban_time: Duration,
+        window: Duration,
+        max_tracked_ips: usize,
+    ) -> Self {
+        Self {
+            base_ban_time,
+            multiplier: multiplier.max(1.0),
+            max_ban_time: max_ban_time.max(base_ban_time),
+            window,
+            max_tracked_ips: max_tracked_ips.max(1),
+            strikes: HashMap::new(),
+            order: VecDeque::new(),
+            last_prune: None,
+        }
+    }
+
+    /// Record a ban for `key` at `now` and return `(escalated_duration, strike_count)`.
+    pub fn record_ban(&mut self, key: IpKey, now: Instant) -> (Duration, u32) {
+        if !self.strikes.contains_key(&key) && self.strikes.len() >= self.max_tracked_ips {
+            let should_prune = self
+                .last_prune
+                .map(|lp| now.saturating_duration_since(lp) >= Duration::from_secs(1))
+                .unwrap_or(true);
+            if should_prune {
+                self.prune(now);
+            }
+            if self.strikes.len() >= self.max_tracked_ips {
+                self.evict_oldest_o1();
+            }
+        }
+
+        let cutoff = now.checked_sub(self.window);
+        let strike = match self.strikes.get(&key).copied() {
+            Some((prev_count, prev_ts)) if cutoff.map(|c| prev_ts >= c).unwrap_or(true) => {
+                prev_count.saturating_add(1)
+            }
+            _ => 1,
+        };
+
+        self.strikes.insert(key, (strike, now));
+        self.order.push_back((key, now));
+
+        let max_order = self.max_tracked_ips.saturating_mul(4).max(64);
+        if self.order.len() > max_order {
+            self.compact_order();
+        }
+
+        let duration = self.compute_duration(strike);
+        (duration, strike)
+    }
+
+    fn compute_duration(&self, strike: u32) -> Duration {
+        let base_secs = self.base_ban_time.as_secs().max(1) as f64;
+        let max_secs = self.max_ban_time.as_secs().max(1) as f64;
+        let exp = strike.saturating_sub(1).min(64) as i32;
+        let scaled = base_secs * self.multiplier.powi(exp);
+        let clamped = if scaled.is_finite() {
+            scaled.min(max_secs).max(base_secs)
+        } else {
+            max_secs
+        };
+        Duration::from_secs(clamped.round() as u64)
+    }
+
+    /// Remove strike entries older than `window`.
+    pub fn prune(&mut self, now: Instant) {
+        self.last_prune = Some(now);
+        let Some(cutoff) = now.checked_sub(self.window) else {
+            return;
+        };
+        self.strikes.retain(|_, (_, ts)| *ts >= cutoff);
+        self.compact_order();
+    }
+
+    fn evict_oldest_o1(&mut self) {
+        while let Some((candidate, ts)) = self.order.pop_front() {
+            let is_live = self.strikes.get(&candidate).map(|(_, t)| *t) == Some(ts);
+            if is_live {
+                self.strikes.remove(&candidate);
+                return;
+            }
+        }
+        if let Some(&any_key) = self.strikes.keys().next() {
+            self.strikes.remove(&any_key);
+        }
+    }
+
+    fn compact_order(&mut self) {
+        self.order
+            .retain(|(k, ts)| self.strikes.get(k).map(|(_, t)| *t) == Some(*ts));
+    }
+
+    pub fn tracked_len(&self) -> usize {
+        self.strikes.len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,5 +291,51 @@ mod tests {
             "eviction took too long: {:?}",
             start.elapsed()
         );
+    }
+
+    #[test]
+    fn escalation_tracker_scales_clamps_decays_and_bounds_flood() {
+        let mut esc = EscalationTracker::new(
+            Duration::from_secs(60),
+            2.0,
+            Duration::from_secs(200),
+            Duration::from_secs(600),
+            500,
+        );
+        let ip = IpKey::V4("203.0.113.50".parse().unwrap());
+        let t0 = Instant::now();
+
+        assert_eq!(esc.record_ban(ip, t0), (Duration::from_secs(60), 1));
+        assert_eq!(
+            esc.record_ban(ip, t0 + Duration::from_secs(10)),
+            (Duration::from_secs(120), 2)
+        );
+        // 60 * 2^2 = 240 -> clamped to max 200
+        assert_eq!(
+            esc.record_ban(ip, t0 + Duration::from_secs(20)),
+            (Duration::from_secs(200), 3)
+        );
+        assert_eq!(
+            esc.record_ban(ip, t0 + Duration::from_secs(30)),
+            (Duration::from_secs(200), 4)
+        );
+
+        // After window expires, decays back to strike 1 (base ban_time)
+        assert_eq!(
+            esc.record_ban(ip, t0 + Duration::from_secs(700)),
+            (Duration::from_secs(60), 1)
+        );
+
+        // Flood bounding stays <= cap in O(1)
+        let start = Instant::now();
+        for i in 0..20_000u32 {
+            let k = IpKey::V4(std::net::Ipv4Addr::from(0x0c00_0000u32 + i));
+            esc.record_ban(
+                k,
+                t0 + Duration::from_secs(701) + Duration::from_micros(i as u64),
+            );
+        }
+        assert!(esc.tracked_len() <= 500);
+        assert!(start.elapsed() < Duration::from_secs(2));
     }
 }
