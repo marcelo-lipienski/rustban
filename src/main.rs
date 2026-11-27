@@ -7,11 +7,12 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use rustban::config::{
-    parse_duration_nonzero, validate_comment_safe, Config, DEFAULT_NFT_BIN, DEFAULT_TABLE_NAME,
+    parse_duration_nonzero, validate_comment_safe, Config, LogSourceKind, DEFAULT_NFT_BIN,
+    DEFAULT_TABLE_NAME,
 };
 use rustban::daemon::run_daemon;
 use rustban::ip::{is_unbannable_special, IgnoreList, IpKey};
-use rustban::matcher::JailMatcher;
+use rustban::matcher::{lint_fail_regexes, JailMatcher};
 use rustban::nft::NftClient;
 
 const DEFAULT_CONFIG_PATH: &str = "/etc/rustban/rustban.toml";
@@ -125,6 +126,18 @@ enum Commands {
         #[arg(long)]
         nft_bin: Option<PathBuf>,
     },
+    /// Validate configuration, regexes, CIDRs, and external binaries without starting the daemon
+    Check {
+        /// Path to TOML configuration file
+        #[arg(short, long, default_value = DEFAULT_CONFIG_PATH)]
+        config: PathBuf,
+        /// Also validate disabled jails (enabled = false)
+        #[arg(long)]
+        include_disabled: bool,
+        /// Fail with non-zero exit code if advisory regex safety or binary warnings are found
+        #[arg(long)]
+        strict: bool,
+    },
     /// Offline regex and config tester against a log file or stdin ('-')
     Test {
         /// Path to TOML configuration file
@@ -133,6 +146,12 @@ enum Commands {
         /// Only test a specific jail name
         #[arg(short, long)]
         jail: Option<String>,
+        /// Include disabled jails (enabled = false) when testing
+        #[arg(long)]
+        include_disabled: bool,
+        /// Fail with non-zero exit code if advisory regex safety warnings are found
+        #[arg(long)]
+        strict: bool,
         /// Path to log file, or '-' to read from stdin
         log_file: String,
     },
@@ -313,16 +332,92 @@ fn execute(cli: Cli) -> Result<(), String> {
             println!("Removed table 'inet {}' from nftables", client.table_name());
             Ok(())
         }
+        Commands::Check {
+            config,
+            include_disabled,
+            strict,
+        } => run_check(&config, include_disabled, strict),
         Commands::Test {
             config,
             jail,
+            include_disabled,
+            strict,
             log_file,
-        } => run_test(&config, jail.as_deref(), &log_file),
+        } => run_test(
+            &config,
+            jail.as_deref(),
+            include_disabled,
+            strict,
+            &log_file,
+        ),
     }
 }
 
-fn run_test(config_path: &Path, jail_filter: Option<&str>, log_file: &str) -> Result<(), String> {
-    let cfg = Config::from_file(config_path)?;
+fn run_check(config_path: &Path, include_disabled: bool, strict: bool) -> Result<(), String> {
+    let cfg = Config::from_file_with_options(config_path, include_disabled)?;
+    if cfg.jails.is_empty() {
+        return Err("no enabled jails found in configuration".into());
+    }
+
+    let mut warnings: Vec<String> = Vec::new();
+    let mut uses_journald = false;
+
+    for jail in &cfg.jails {
+        JailMatcher::compile(&jail.fail_regex, &jail.ignore_regex, cfg.max_line_bytes)?;
+        if matches!(jail.source, LogSourceKind::Journald { .. }) {
+            uses_journald = true;
+        }
+        for w in lint_fail_regexes(&jail.fail_regex) {
+            warnings.push(format!(
+                "jail '{}' pattern '{}': {}",
+                jail.name, w.pattern, w.message
+            ));
+        }
+    }
+
+    if !cfg.nft_bin.exists() {
+        warnings.push(format!(
+            "configured nft_bin '{}' does not exist on this host",
+            cfg.nft_bin.display()
+        ));
+    }
+    if uses_journald && !cfg.journalctl_bin.exists() {
+        warnings.push(format!(
+            "configured journalctl_bin '{}' does not exist on this host",
+            cfg.journalctl_bin.display()
+        ));
+    }
+
+    for w in &warnings {
+        eprintln!("warning: {w}");
+    }
+
+    println!(
+        "Config OK: table=inet {} jails={} whitelisted_v4={} whitelisted_v6={} warnings={}",
+        cfg.table_name,
+        cfg.jails.len(),
+        cfg.global_ignores.v4_cidrs().len(),
+        cfg.global_ignores.v6_cidrs().len(),
+        warnings.len()
+    );
+
+    if strict && !warnings.is_empty() {
+        return Err(format!(
+            "config check failed under --strict with {} warning(s)",
+            warnings.len()
+        ));
+    }
+    Ok(())
+}
+
+fn run_test(
+    config_path: &Path,
+    jail_filter: Option<&str>,
+    include_disabled: bool,
+    strict: bool,
+    log_file: &str,
+) -> Result<(), String> {
+    let cfg = Config::from_file_with_options(config_path, include_disabled)?;
     let selected: Vec<_> = cfg
         .jails
         .iter()
@@ -337,12 +432,29 @@ fn run_test(config_path: &Path, jail_filter: Option<&str>, log_file: &str) -> Re
     }
 
     let mut matchers = Vec::with_capacity(selected.len());
+    let mut warnings: Vec<String> = Vec::new();
     for j in &selected {
         matchers.push(JailMatcher::compile(
             &j.fail_regex,
             &j.ignore_regex,
             cfg.max_line_bytes,
         )?);
+        for w in lint_fail_regexes(&j.fail_regex) {
+            warnings.push(format!(
+                "jail '{}' pattern '{}': {}",
+                j.name, w.pattern, w.message
+            ));
+        }
+    }
+
+    for w in &warnings {
+        eprintln!("warning: {w}");
+    }
+    if strict && !warnings.is_empty() {
+        return Err(format!(
+            "regex safety check failed under --strict with {} warning(s)",
+            warnings.len()
+        ));
     }
 
     let reader: Box<dyn BufRead> = if log_file == "-" {

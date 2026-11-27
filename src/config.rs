@@ -49,6 +49,9 @@ struct RawJail {
     enabled: bool,
     log_path: Option<PathBuf>,
     systemd_unit: Option<String>,
+    #[serde(default)]
+    systemd_units: Vec<String>,
+    syslog_identifier: Option<String>,
     find_time: Option<String>,
     ban_time: Option<String>,
     max_retries: Option<usize>,
@@ -65,10 +68,13 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LogSourceKind {
     File(PathBuf),
-    Journald { unit: String },
+    Journald {
+        units: Vec<String>,
+        syslog_identifier: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -96,12 +102,20 @@ pub struct Config {
 
 impl Config {
     pub fn from_file(path: &Path) -> Result<Self, String> {
+        Self::from_file_with_options(path, false)
+    }
+
+    pub fn from_file_with_options(path: &Path, include_disabled: bool) -> Result<Self, String> {
         let raw = fs::read_to_string(path)
             .map_err(|e| format!("failed to read config '{}': {e}", path.display()))?;
-        Self::from_toml_str(&raw)
+        Self::from_toml_str_with_options(&raw, include_disabled)
     }
 
     pub fn from_toml_str(input: &str) -> Result<Self, String> {
+        Self::from_toml_str_with_options(input, false)
+    }
+
+    pub fn from_toml_str_with_options(input: &str, include_disabled: bool) -> Result<Self, String> {
         let parsed: RawConfig =
             toml::from_str(input).map_err(|e| format!("failed to parse TOML config: {e}"))?;
 
@@ -155,25 +169,46 @@ impl Config {
 
         let mut jails = Vec::new();
         for (name, raw_jail) in parsed.jails {
-            if !raw_jail.enabled {
+            if !include_disabled && !raw_jail.enabled {
                 continue;
             }
             validate_comment_safe(&name, "jail name")?;
 
-            let source = match (raw_jail.log_path, raw_jail.systemd_unit) {
-                (Some(path), None) => LogSourceKind::File(path),
-                (None, Some(unit)) => {
-                    validate_unit_name(&unit, &name)?;
-                    LogSourceKind::Journald { unit }
+            if raw_jail.systemd_unit.is_some() && !raw_jail.systemd_units.is_empty() {
+                return Err(format!(
+                    "jail '{name}': specify either 'systemd_unit' or 'systemd_units', not both"
+                ));
+            }
+            let mut units = raw_jail.systemd_units;
+            if let Some(unit) = raw_jail.systemd_unit {
+                units.push(unit);
+            }
+            let has_journald = !units.is_empty() || raw_jail.syslog_identifier.is_some();
+
+            let source = match (raw_jail.log_path, has_journald) {
+                (Some(path), false) => LogSourceKind::File(path),
+                (None, true) => {
+                    for u in &units {
+                        validate_unit_name(u, &name)?;
+                    }
+                    units.sort();
+                    units.dedup();
+                    if let Some(ref ident) = raw_jail.syslog_identifier {
+                        validate_syslog_identifier(ident, &name)?;
+                    }
+                    LogSourceKind::Journald {
+                        units,
+                        syslog_identifier: raw_jail.syslog_identifier,
+                    }
                 }
-                (Some(_), Some(_)) => {
+                (Some(_), true) => {
                     return Err(format!(
-                        "jail '{name}': specify only one of 'log_path' or 'systemd_unit'"
+                        "jail '{name}': specify either 'log_path' or journald selectors ('systemd_unit'/'systemd_units'/'syslog_identifier'), not both"
                     ));
                 }
-                (None, None) => {
+                (None, false) => {
                     return Err(format!(
-                        "jail '{name}': must specify either 'log_path' or 'systemd_unit'"
+                        "jail '{name}': must specify 'log_path' or a journald selector ('systemd_unit', 'systemd_units', or 'syslog_identifier')"
                     ));
                 }
             };
@@ -335,6 +370,23 @@ fn validate_unit_name(unit: &str, jail: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_syslog_identifier(ident: &str, jail: &str) -> Result<(), String> {
+    if ident.is_empty() || ident.len() > 128 || ident.starts_with('-') {
+        return Err(format!(
+            "jail '{jail}': invalid syslog_identifier '{ident}'"
+        ));
+    }
+    if !ident
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '@' | '/' | ':'))
+    {
+        return Err(format!(
+            "jail '{jail}': invalid characters in syslog_identifier '{ident}'"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,5 +425,68 @@ systemd_unit = "ssh.service"
 fail_regex = ['from <HOST>']
 "#;
         assert!(Config::from_toml_str(toml).is_err());
+    }
+
+    #[test]
+    fn parses_multi_unit_and_syslog_identifier_and_include_disabled() {
+        let toml = r#"
+[jails.sshd]
+systemd_units = ["sshd.service", "ssh.service", "ssh.service"]
+syslog_identifier = "sshd"
+fail_regex = ['Failed password for .+ from <HOST> port \d+ ssh2$']
+
+[jails.ident_only]
+enabled = false
+syslog_identifier = "dropbear"
+fail_regex = ['Bad password attempt for .+ from <HOST>:\d+$']
+"#;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        assert_eq!(cfg.jails.len(), 1);
+        assert_eq!(
+            cfg.jails[0].source,
+            LogSourceKind::Journald {
+                units: vec!["ssh.service".into(), "sshd.service".into()],
+                syslog_identifier: Some("sshd".into()),
+            }
+        );
+
+        let all = Config::from_toml_str_with_options(toml, true).unwrap();
+        assert_eq!(all.jails.len(), 2);
+        assert_eq!(
+            all.jails[0].source,
+            LogSourceKind::Journald {
+                units: vec![],
+                syslog_identifier: Some("dropbear".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_conflicting_or_malicious_journald_selectors() {
+        let both_units = r#"
+[jails.bad]
+systemd_unit = "ssh.service"
+systemd_units = ["sshd.service"]
+fail_regex = ['from <HOST>$']
+"#;
+        assert!(Config::from_toml_str(both_units).is_err());
+
+        let file_and_ident = r#"
+[jails.bad]
+log_path = "/var/log/auth.log"
+syslog_identifier = "sshd"
+fail_regex = ['from <HOST>$']
+"#;
+        assert!(Config::from_toml_str(file_and_ident).is_err());
+
+        for bad_ident in ["--unit=foo", "sshd; id", "sshd $(whoami)", ""] {
+            let toml = format!(
+                "[jails.bad]\nsyslog_identifier = \"{bad_ident}\"\nfail_regex = ['from <HOST>$']\n"
+            );
+            assert!(
+                Config::from_toml_str(&toml).is_err(),
+                "should reject bad syslog_identifier: {bad_ident:?}"
+            );
+        }
     }
 }

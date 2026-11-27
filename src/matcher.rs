@@ -70,6 +70,54 @@ impl JailMatcher {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegexWarning {
+    pub pattern: String,
+    pub message: String,
+}
+
+/// Inspect a `fail_regex` pattern for common log-injection / spoofing footguns:
+/// - Unanchored end (`$`) when `<HOST>` is not anchored at start-of-line (`^<HOST>`).
+/// - Non-greedy wildcard (`.*?` or `.+?`) preceding `<HOST>` / `(?P<ip>...)`, which can let
+///   attacker-controlled usernames or URIs inject a spoofed victim IP earlier on the line.
+pub fn lint_fail_regex(pattern: &str) -> Vec<RegexWarning> {
+    let mut warnings = Vec::new();
+    let trimmed = pattern.trim();
+
+    let host_pos = trimmed.find("<HOST>").or_else(|| trimmed.find("(?P<ip>"));
+
+    let anchored_at_start_host = trimmed.starts_with("^<HOST>")
+        || trimmed.starts_with("^(?P<ip>")
+        || trimmed.starts_with("^\\[?<HOST>");
+
+    if !anchored_at_start_host && !trimmed.ends_with('$') {
+        warnings.push(RegexWarning {
+            pattern: pattern.to_string(),
+            message: "fail_regex does not end with '$' — consider anchoring to end-of-line to prevent trailing log-injection spoofing".to_string(),
+        });
+    }
+
+    if let Some(pos) = host_pos {
+        let prefix = &trimmed[..pos];
+        if prefix.contains(".*?") || prefix.contains(".+?") {
+            warnings.push(RegexWarning {
+                pattern: pattern.to_string(),
+                message: "non-greedy wildcard (.*? or .+?) before <HOST> may match a spoofed IP inside attacker-controlled text (use greedy .* or .+ with an end anchor instead)".to_string(),
+            });
+        }
+    }
+
+    warnings
+}
+
+pub fn lint_fail_regexes(patterns: &[String]) -> Vec<RegexWarning> {
+    let mut out = Vec::new();
+    for p in patterns {
+        out.extend(lint_fail_regex(p));
+    }
+    out
+}
+
 pub fn expand_host_token(pattern: &str) -> String {
     pattern.replace("<HOST>", HOST_PATTERN)
 }
@@ -130,5 +178,23 @@ mod tests {
     fn rejects_regex_without_host_or_ip_capture() {
         let err = JailMatcher::compile(&[r"Failed password for root".into()], &[], 4096);
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn lints_unanchored_and_non_greedy_fail_regexes() {
+        // Anchored greedy sshd pattern -> clean
+        assert!(lint_fail_regex(r"Failed password for .+ from <HOST> port \d+ ssh2$").is_empty());
+        // Start-anchored <HOST> pattern (nginx access log) -> clean
+        assert!(lint_fail_regex(r#"^<HOST> \S+ \S+ "GET /\.env" 404 "#).is_empty());
+
+        // Missing end anchor -> 1 warning
+        let w_unanchored = lint_fail_regex(r"Failed password for .+ from <HOST> port \d+");
+        assert_eq!(w_unanchored.len(), 1);
+        assert!(w_unanchored[0].message.contains("end with '$'"));
+
+        // Non-greedy wildcard before <HOST> -> warning even if anchored
+        let w_nongreedy = lint_fail_regex(r"Failed password for .+? from <HOST> port \d+$");
+        assert_eq!(w_nongreedy.len(), 1);
+        assert!(w_nongreedy[0].message.contains("non-greedy"));
     }
 }

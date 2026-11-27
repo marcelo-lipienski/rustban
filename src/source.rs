@@ -1,8 +1,8 @@
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -10,6 +10,9 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+
+/// Cap incomplete/single log lines to 64 KiB so giant/binary lines cannot exhaust memory.
+const MAX_LINE_BUF_BYTES: usize = 65_536;
 
 #[derive(Debug)]
 pub struct LogEvent {
@@ -19,32 +22,36 @@ pub struct LogEvent {
 
 #[derive(Debug, Default)]
 pub struct ChildRegistry {
-    children: Mutex<Vec<u32>>,
+    children: Mutex<Vec<Arc<Mutex<Option<Child>>>>>,
 }
 
 impl ChildRegistry {
-    pub fn register(&self, pid: u32) {
+    pub fn register(&self, child: Child) -> Arc<Mutex<Option<Child>>> {
+        let handle = Arc::new(Mutex::new(Some(child)));
         if let Ok(mut guard) = self.children.lock() {
-            guard.push(pid);
+            guard.push(Arc::clone(&handle));
+        }
+        handle
+    }
+
+    pub fn unregister(&self, handle: &Arc<Mutex<Option<Child>>>) {
+        if let Ok(mut guard) = self.children.lock() {
+            guard.retain(|item| !Arc::ptr_eq(item, handle));
         }
     }
 
-    pub fn unregister(&self, pid: u32) {
-        if let Ok(mut guard) = self.children.lock() {
-            guard.retain(|&p| p != pid);
-        }
-    }
-
-    /// Terminate all spawned helper children (e.g. `journalctl -f`) on daemon shutdown.
+    /// Terminate all spawned helper children (e.g. `journalctl -f`) directly via `Child::kill()`
+    /// without depending on an external `/bin/kill` binary.
     pub fn kill_all(&self) {
-        if let Ok(guard) = self.children.lock() {
-            for &pid in guard.iter() {
-                let _ = Command::new("/bin/kill")
-                    .args(["-TERM", &pid.to_string()])
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
+        let snapshot: Vec<Arc<Mutex<Option<Child>>>> = match self.children.lock() {
+            Ok(guard) => guard.clone(),
+            Err(_) => return,
+        };
+        for handle in snapshot {
+            if let Ok(mut slot) = handle.lock() {
+                if let Some(ref mut child) = *slot {
+                    let _ = child.kill();
+                }
             }
         }
     }
@@ -118,9 +125,8 @@ impl OpenFile {
                     }
                     if !slice.is_empty() {
                         // Cap incomplete partial lines to avoid unbounded growth on binary garbage.
-                        const MAX_PARTIAL: usize = 65_536;
-                        if self.partial.len() < MAX_PARTIAL {
-                            let take = (MAX_PARTIAL - self.partial.len()).min(slice.len());
+                        if self.partial.len() < MAX_LINE_BUF_BYTES {
+                            let take = (MAX_LINE_BUF_BYTES - self.partial.len()).min(slice.len());
                             self.partial.extend_from_slice(&slice[..take]);
                         }
                     }
@@ -241,7 +247,8 @@ fn run_file_tailer(
 pub fn spawn_journald_tailer(
     source_id: usize,
     journalctl_bin: PathBuf,
-    unit: String,
+    units: Vec<String>,
+    syslog_identifier: Option<String>,
     tx: SyncSender<LogEvent>,
     shutdown: Arc<AtomicBool>,
     children: Arc<ChildRegistry>,
@@ -249,33 +256,63 @@ pub fn spawn_journald_tailer(
     thread::Builder::new()
         .name(format!("tail-journal-{source_id}"))
         .spawn(move || {
-            run_journald_tailer(source_id, &journalctl_bin, &unit, &tx, &shutdown, &children);
+            run_journald_tailer(
+                source_id,
+                &journalctl_bin,
+                &units,
+                syslog_identifier.as_deref(),
+                &tx,
+                &shutdown,
+                &children,
+            );
         })
         .expect("failed to spawn journald tailer thread")
+}
+
+pub fn build_journalctl_args(units: &[String], syslog_identifier: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "--follow".to_string(),
+        "--lines=0".to_string(),
+        "--output=cat".to_string(),
+    ];
+    for u in units {
+        args.push(format!("--unit={u}"));
+    }
+    if let Some(ident) = syslog_identifier {
+        args.push(format!("--identifier={ident}"));
+    }
+    args
+}
+
+fn format_journal_desc(units: &[String], syslog_identifier: Option<&str>) -> String {
+    match (units.is_empty(), syslog_identifier) {
+        (false, Some(ident)) => format!("units=[{}] identifier={ident}", units.join(",")),
+        (false, None) => format!("units=[{}]", units.join(",")),
+        (true, Some(ident)) => format!("identifier={ident}"),
+        (true, None) => "journald".to_string(),
+    }
 }
 
 fn run_journald_tailer(
     source_id: usize,
     journalctl_bin: &Path,
-    unit: &str,
+    units: &[String],
+    syslog_identifier: Option<&str>,
     tx: &SyncSender<LogEvent>,
     shutdown: &Arc<AtomicBool>,
     children: &Arc<ChildRegistry>,
 ) {
     let mut backoff = Duration::from_secs(1);
+    let args = build_journalctl_args(units, syslog_identifier);
+    let desc = format_journal_desc(units, syslog_identifier);
 
     while !shutdown.load(Ordering::Relaxed) {
         eprintln!(
-            "[rustban] tailing systemd unit '{unit}' via {}",
+            "[rustban] tailing systemd journal ({desc}) via {}",
             journalctl_bin.display()
         );
         let child_res = Command::new(journalctl_bin)
-            .args([
-                "--follow",
-                "--lines=0",
-                "--output=cat",
-                &format!("--unit={unit}"),
-            ])
+            .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -283,26 +320,38 @@ fn run_journald_tailer(
 
         match child_res {
             Ok(mut child) => {
-                let pid = child.id();
-                children.register(pid);
+                let stdout = child.stdout.take();
+                let handle = children.register(child);
                 backoff = Duration::from_secs(1);
 
-                let stream_ok = stream_child_stdout(&mut child, source_id, tx, shutdown);
-                let _ = child.kill();
-                let status = child.wait();
-                children.unregister(pid);
+                let stream_ok = match stdout {
+                    Some(out) => stream_reader_bounded(out, source_id, tx, shutdown),
+                    None => true,
+                };
+
+                let status = {
+                    let mut taken = handle.lock().ok().and_then(|mut slot| slot.take());
+                    match taken.as_mut() {
+                        Some(c) => {
+                            let _ = c.kill();
+                            Some(c.wait())
+                        }
+                        None => None,
+                    }
+                };
+                children.unregister(&handle);
 
                 if shutdown.load(Ordering::Relaxed) || !stream_ok {
                     break;
                 }
                 eprintln!(
-                    "[rustban] warn: journalctl for unit '{unit}' exited ({status:?}); restarting in {}s",
+                    "[rustban] warn: journalctl ({desc}) exited ({status:?}); restarting in {}s",
                     backoff.as_secs()
                 );
             }
             Err(e) => {
                 eprintln!(
-                    "[rustban] error spawning '{}' for unit '{unit}': {e}; retrying in {}s",
+                    "[rustban] error spawning '{}' ({desc}): {e}; retrying in {}s",
                     journalctl_bin.display(),
                     backoff.as_secs()
                 );
@@ -321,32 +370,61 @@ fn run_journald_tailer(
     }
 }
 
-fn stream_child_stdout(
-    child: &mut Child,
+fn stream_reader_bounded<R: Read>(
+    mut reader: R,
     source_id: usize,
     tx: &SyncSender<LogEvent>,
     shutdown: &AtomicBool,
 ) -> bool {
-    let Some(stdout) = child.stdout.take() else {
-        return true;
-    };
-    let mut reader = BufReader::new(stdout);
-    let mut buf = Vec::new();
+    let mut chunk = vec![0u8; 65_536];
+    let mut partial: Vec<u8> = Vec::new();
+    let mut dropping_overflow = false;
+
     loop {
         if shutdown.load(Ordering::Relaxed) {
             return false;
         }
-        buf.clear();
-        match reader.read_until(b'\n', &mut buf) {
-            Ok(0) => return true,
-            Ok(_) => {
-                while buf.ends_with(b"\n") || buf.ends_with(b"\r") {
-                    buf.pop();
-                }
-                if !buf.is_empty() {
-                    let line = String::from_utf8_lossy(&buf).into_owned();
-                    if tx.send(LogEvent { source_id, line }).is_err() {
+        match reader.read(&mut chunk) {
+            Ok(0) => {
+                if !partial.is_empty() {
+                    if partial.ends_with(b"\r") {
+                        partial.pop();
+                    }
+                    let line = String::from_utf8_lossy(&partial).into_owned();
+                    partial.clear();
+                    if !line.is_empty() && tx.send(LogEvent { source_id, line }).is_err() {
                         return false;
+                    }
+                }
+                return true;
+            }
+            Ok(n) => {
+                let mut slice = &chunk[..n];
+                while let Some(pos) = slice.iter().position(|&b| b == b'\n') {
+                    if !dropping_overflow && partial.len() < MAX_LINE_BUF_BYTES {
+                        let take = (MAX_LINE_BUF_BYTES - partial.len()).min(pos);
+                        partial.extend_from_slice(&slice[..take]);
+                    }
+                    if partial.ends_with(b"\r") {
+                        partial.pop();
+                    }
+                    let line = String::from_utf8_lossy(&partial).into_owned();
+                    partial.clear();
+                    dropping_overflow = false;
+                    if !line.is_empty() && tx.send(LogEvent { source_id, line }).is_err() {
+                        return false;
+                    }
+                    slice = &slice[pos + 1..];
+                }
+                if !slice.is_empty() && !dropping_overflow {
+                    if partial.len() < MAX_LINE_BUF_BYTES {
+                        let take = (MAX_LINE_BUF_BYTES - partial.len()).min(slice.len());
+                        partial.extend_from_slice(&slice[..take]);
+                        if partial.len() >= MAX_LINE_BUF_BYTES {
+                            dropping_overflow = true;
+                        }
+                    } else {
+                        dropping_overflow = true;
                     }
                 }
             }
@@ -360,6 +438,9 @@ fn stream_child_stdout(
         }
     }
 }
+
+#[allow(dead_code)]
+fn _assert_child_stdout_is_read(_: &ChildStdout) {}
 
 #[cfg(test)]
 mod tests {
@@ -401,5 +482,60 @@ mod tests {
 
         shutdown.store(true, Ordering::Relaxed);
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn journalctl_args_and_bounded_stream_cap_giant_lines() {
+        let args =
+            build_journalctl_args(&["ssh.service".into(), "sshd.service".into()], Some("sshd"));
+        assert_eq!(
+            args,
+            vec![
+                "--follow",
+                "--lines=0",
+                "--output=cat",
+                "--unit=ssh.service",
+                "--unit=sshd.service",
+                "--identifier=sshd",
+            ]
+        );
+
+        // Stream a 256 KiB binary/text line without newline followed by a normal attack line
+        let mut input = vec![b'A'; 256 * 1024];
+        input.push(b'\n');
+        input.extend_from_slice(b"Failed password for root from 203.0.113.88 port 22 ssh2\n");
+
+        let (tx, rx) = mpsc::sync_channel(8);
+        let shutdown = AtomicBool::new(false);
+        let ok = stream_reader_bounded(&input[..], 7, &tx, &shutdown);
+        assert!(ok);
+
+        let ev1 = rx.recv().unwrap();
+        assert_eq!(ev1.source_id, 7);
+        assert_eq!(ev1.line.len(), MAX_LINE_BUF_BYTES);
+
+        let ev2 = rx.recv().unwrap();
+        assert_eq!(
+            ev2.line,
+            "Failed password for root from 203.0.113.88 port 22 ssh2"
+        );
+    }
+
+    #[test]
+    fn child_registry_kills_registered_child_without_external_kill_binary() {
+        let registry = ChildRegistry::default();
+        let child = Command::new("/bin/sh")
+            .args(["-c", "sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let handle = registry.register(child);
+        registry.kill_all();
+        let mut taken = handle.lock().unwrap().take().unwrap();
+        let status = taken.wait().unwrap();
+        assert!(!status.success());
+        registry.unregister(&handle);
     }
 }
