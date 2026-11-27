@@ -9,13 +9,13 @@ Lightweight Fail2Ban replacement in Rust that offloads ban expiration to Linux `
 ## Design
 
 - **Kernel as the sole active-ban store**: zero SQLite database, zero background unban timers, zero Unix socket IPC, zero async runtime (`tokio`), and zero C FFI dependencies.
-- **Ephemeral in-memory failure windows**: each jail only tracks unbanned failing IPs inside `find_time` (with bounded memory caps). Once an IP reaches `max_retries`, `rustban` writes it to `nftables` with `timeout <ban_time>` and immediately forgets it.
+- **Ephemeral in-memory failure windows & opt-in escalation**: each jail tracks only unbanned failing IPs inside `find_time` (with O(1) bounded memory caps). Once an IP reaches `max_retries`, `rustban` writes it to `nftables` with `timeout <ban_time>` and immediately forgets it. Optional per-jail progressive escalation (`ban_time_multiplier`, `ban_time_max`, `ban_time_window`) scales repeat offenders without a database and incurs zero overhead when disabled.
 - **Lockout-proof `nftables` schema (`table inet rustban`)**:
   - Hooks `prerouting` at `raw` priority (`-300`), dropping offending packets before `conntrack`, severing active TCP sessions immediately, and protecting both host services and Docker/Podman port-forwarded containers.
-  - Enforces `ignore_ips` (defaulting to `127.0.0.0/8`, `::1/128`, `fe80::/10` + user CIDRs) in both userspace **and** `whitelist_v4` / `whitelist_v6` `return` rules evaluated before the drop rules.
+  - Enforces `ignore_ips` (defaulting to `127.0.0.0/8`, `::1/128`, `fe80::/10`, plus `ignore_self` local interface IPs, with opt-in `ignore_self_refresh` and opt-in `ignore_interfaces`) in both userspace **and** kernel `return` rules evaluated before the drop rules.
   - Uses O(1) timeout hash sets (`banned_v4` `/32` hosts and `banned_v6` `/64` prefixes via `ip6 saddr & ffff:ffff:ffff:ffff:: @banned_v6 drop`) with kernel per-element packet/byte `counter` and jail `comment`.
-  - Survives daemon restarts and stops (`table inet rustban` and remaining kernel TTLs stay intact until explicitly cleared with `flush` or `teardown`).
-- **Dual log sources & explicit TOML regexes**: tails plain log files (handling inode rotation and `copytruncate`) and `systemd-journald` units (`journalctl -f`), matching with Rust's linear-time ReDoS-safe `regex` crate.
+  - Survives daemon restarts, stops, and live `SIGHUP` config reloads (`table inet rustban` and remaining kernel TTLs stay intact until explicitly cleared with `flush` or `teardown`).
+- **Dual log sources & explicit TOML regexes**: tails plain log files (handling inode rotation and `copytruncate`) and `systemd-journald` units/identifiers (`systemd_unit`, `systemd_units`, `syslog_identifier`) with bounded line buffers, matching with Rust's linear-time ReDoS-safe `regex` crate.
 
 ## Building (Docker Release Only)
 
@@ -25,10 +25,12 @@ All compilation runs in release mode inside Docker — never locally:
 ./scripts/build-docker.sh
 ```
 
-To also extract the compiled Linux release binary into `./dist/rustban`:
+To extract the compiled native Linux release binary into `./dist/rustban`, or cross-compile all 4 release targets (`x86_64`/`aarch64` × `gnu`/`static musl`):
 
 ```bash
 ./scripts/build-docker.sh --extract
+./scripts/build-docker.sh --all-targets
+./scripts/build-docker.sh --target aarch64-unknown-linux-musl
 ```
 
 ## Testing Locally Against Docker
@@ -67,11 +69,14 @@ Stored results are published in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md)
 ## CLI Usage
 
 ```bash
-# Run daemon (use --dry-run to inspect generated nft scripts without touching the firewall)
-rustban run -c /etc/rustban/rustban.toml [--dry-run]
+# Validate configuration, regex safety, CIDRs, and external binaries
+rustban check -c /etc/rustban/rustban.toml [--strict]
 
-# Inspect active kernel bans, remaining TTLs, and dropped packets/bytes
-rustban status [--json]
+# Run daemon (--dry-run inspects nft scripts; --log-format json emits NDJSON; SIGHUP reloads live)
+rustban run -c /etc/rustban/rustban.toml [--dry-run] [--log-format text|json]
+
+# Inspect active kernel bans, remaining TTLs, and dropped packet counters
+rustban status [--json | --prometheus]
 
 # Manually ban / unban an IPv4 address or IPv6 /64 prefix
 rustban ban 203.0.113.42 -t 1h -r manual
@@ -82,7 +87,7 @@ rustban flush
 rustban teardown
 
 # Validate config and test jail regexes offline against a log file or stdin
-rustban test -c /etc/rustban/rustban.toml /var/log/auth.log
+rustban test -c /etc/rustban/rustban.toml [--include-disabled] [--strict] /var/log/auth.log
 ```
 
 ## Systemd Deployment
