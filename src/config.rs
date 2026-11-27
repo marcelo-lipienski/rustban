@@ -38,8 +38,11 @@ struct RawGlobal {
     max_line_bytes: Option<usize>,
     include_default_ignores: Option<bool>,
     ignore_self: Option<bool>,
+    ignore_self_refresh: Option<String>,
     #[serde(default)]
     ignore_ips: Vec<String>,
+    #[serde(default)]
+    ignore_interfaces: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +90,7 @@ pub struct JailConfig {
     pub max_tracked_ips: usize,
     pub fail_regex: Vec<String>,
     pub ignore_regex: Vec<String>,
+    pub raw_ignore_ips: Vec<String>,
     pub ignore_ips: IgnoreList,
 }
 
@@ -96,6 +100,11 @@ pub struct Config {
     pub journalctl_bin: PathBuf,
     pub table_name: String,
     pub max_line_bytes: usize,
+    pub include_default_ignores: bool,
+    pub ignore_self: bool,
+    pub ignore_self_refresh: Option<Duration>,
+    pub raw_global_ignore_ips: Vec<String>,
+    pub ignore_interfaces: Vec<String>,
     pub global_ignores: IgnoreList,
     pub jails: Vec<JailConfig>,
 }
@@ -164,8 +173,20 @@ impl Config {
 
         let include_defaults = parsed.global.include_default_ignores.unwrap_or(true);
         let ignore_self = parsed.global.ignore_self.unwrap_or(true);
+        let ignore_self_refresh = match parsed.global.ignore_self_refresh.as_deref() {
+            Some(s) => Some(parse_duration_nonzero(s, "global.ignore_self_refresh")?),
+            None => None,
+        };
+        let mut ignore_interfaces = parsed.global.ignore_interfaces;
+        for iface in &ignore_interfaces {
+            validate_interface_name(iface, "global.ignore_interfaces")?;
+        }
+        ignore_interfaces.sort();
+        ignore_interfaces.dedup();
+
+        let raw_global_ignore_ips = parsed.global.ignore_ips;
         let global_ignores =
-            IgnoreList::from_options(&parsed.global.ignore_ips, include_defaults, ignore_self)?;
+            IgnoreList::from_options(&raw_global_ignore_ips, include_defaults, ignore_self)?;
 
         let mut jails = Vec::new();
         for (name, raw_jail) in parsed.jails {
@@ -253,6 +274,7 @@ impl Config {
                 max_tracked_ips,
                 fail_regex: raw_jail.fail_regex,
                 ignore_regex: raw_jail.ignore_regex,
+                raw_ignore_ips: raw_jail.ignore_ips,
                 ignore_ips: jail_ignores,
             });
         }
@@ -262,6 +284,11 @@ impl Config {
             journalctl_bin,
             table_name,
             max_line_bytes,
+            include_default_ignores: include_defaults,
+            ignore_self,
+            ignore_self_refresh,
+            raw_global_ignore_ips,
+            ignore_interfaces,
             global_ignores,
             jails,
         })
@@ -350,6 +377,25 @@ pub fn validate_comment_safe(value: &str, field: &str) -> Result<(), String> {
     {
         return Err(format!(
             "{field} contains disallowed characters (allowed: [A-Za-z0-9_.:/ -]): '{value}'"
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_interface_name(name: &str, field: &str) -> Result<(), String> {
+    // Linux IFNAMSIZ is 16 bytes including NUL terminator => max 15 characters.
+    // Disallow wildcards, quotes, whitespace, and leading '-' to prevent nft syntax injection.
+    if name.is_empty() || name.len() > 15 || name.starts_with('-') {
+        return Err(format!(
+            "{field}: invalid interface name '{name}' (must be 1..=15 chars, not starting with '-')"
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'))
+    {
+        return Err(format!(
+            "{field}: interface name '{name}' contains disallowed characters (allowed: [A-Za-z0-9_.:-])"
         ));
     }
     Ok(())

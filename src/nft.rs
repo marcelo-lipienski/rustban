@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::config::{validate_comment_safe, validate_nft_ident};
+use crate::config::{validate_comment_safe, validate_interface_name, validate_nft_ident};
 use crate::ip::{IgnoreList, IpKey};
 
 pub const SET_WHITELIST_V4: &str = "whitelist_v4";
@@ -66,10 +66,25 @@ impl NftClient {
         &self.nft_bin
     }
 
-    /// Build the idempotent initialization script.
+    /// Build the idempotent initialization script (without interface whitelisting).
     /// Preserves existing `banned_v4` / `banned_v6` elements and remaining timeouts across restarts,
     /// while cleanly refreshing `whitelist_v4` / `whitelist_v6` and `prerouting` rule order.
     pub fn build_init_script(&self, ignores: &IgnoreList) -> String {
+        self.build_init_script_with_interfaces(ignores, &[])
+            .expect("empty interface list is always valid")
+    }
+
+    /// Build the idempotent initialization script with optional exact `iifname` whitelisting.
+    /// Emits ZERO `iifname` rules when `ignore_interfaces` is empty.
+    pub fn build_init_script_with_interfaces(
+        &self,
+        ignores: &IgnoreList,
+        ignore_interfaces: &[String],
+    ) -> Result<String, String> {
+        for iface in ignore_interfaces {
+            validate_interface_name(iface, "ignore_interfaces")?;
+        }
+
         let t = &self.table_name;
         let mut s = String::with_capacity(1024);
         s.push_str(&format!("add table inet {t}\n"));
@@ -107,6 +122,17 @@ impl NftClient {
             ));
         }
 
+        if !ignore_interfaces.is_empty() {
+            let quoted: Vec<String> = ignore_interfaces
+                .iter()
+                .map(|i| format!("\"{i}\""))
+                .collect();
+            s.push_str(&format!(
+                "add rule inet {t} {CHAIN_PREROUTING} iifname {{ {} }} return\n",
+                quoted.join(", ")
+            ));
+        }
+
         s.push_str(&format!(
             "add rule inet {t} {CHAIN_PREROUTING} ip saddr @{SET_WHITELIST_V4} return\n"
         ));
@@ -119,6 +145,30 @@ impl NftClient {
         s.push_str(&format!(
             "add rule inet {t} {CHAIN_PREROUTING} ip6 saddr & ffff:ffff:ffff:ffff:: @{SET_BANNED_V6} drop\n"
         ));
+        Ok(s)
+    }
+
+    /// Build a lightweight atomic script that refreshes ONLY `whitelist_v4` / `whitelist_v6`,
+    /// leaving chains and active `banned_v4` / `banned_v6` elements completely untouched.
+    pub fn build_refresh_whitelists_script(&self, ignores: &IgnoreList) -> String {
+        let t = &self.table_name;
+        let mut s = String::with_capacity(512);
+        s.push_str(&format!("flush set inet {t} {SET_WHITELIST_V4}\n"));
+        s.push_str(&format!("flush set inet {t} {SET_WHITELIST_V6}\n"));
+        if !ignores.v4_cidrs().is_empty() {
+            let elems: Vec<String> = ignores.v4_cidrs().iter().map(|c| c.to_string()).collect();
+            s.push_str(&format!(
+                "add element inet {t} {SET_WHITELIST_V4} {{ {} }}\n",
+                elems.join(", ")
+            ));
+        }
+        if !ignores.v6_cidrs().is_empty() {
+            let elems: Vec<String> = ignores.v6_cidrs().iter().map(|c| c.to_string()).collect();
+            s.push_str(&format!(
+                "add element inet {t} {SET_WHITELIST_V6} {{ {} }}\n",
+                elems.join(", ")
+            ));
+        }
         s
     }
 
@@ -240,7 +290,20 @@ impl NftClient {
     }
 
     pub fn init(&self, ignores: &IgnoreList) -> Result<(), String> {
-        let script = self.build_init_script(ignores);
+        self.init_with_interfaces(ignores, &[])
+    }
+
+    pub fn init_with_interfaces(
+        &self,
+        ignores: &IgnoreList,
+        ignore_interfaces: &[String],
+    ) -> Result<(), String> {
+        let script = self.build_init_script_with_interfaces(ignores, ignore_interfaces)?;
+        self.apply_script(&script)
+    }
+
+    pub fn refresh_whitelists(&self, ignores: &IgnoreList) -> Result<(), String> {
+        let script = self.build_refresh_whitelists_script(ignores);
         self.apply_script(&script)
     }
 
@@ -603,5 +666,32 @@ mod tests {
         assert!(batch.contains("203.0.113.9 timeout 300s comment \"nginx\""));
         assert!(batch.contains("203.0.113.10 timeout 300s comment \"sshd\""));
         assert!(batch.contains("add element inet rustban banned_v6 { 2001:db8:abcd:1234:: timeout 600s comment \"sshd\" }"));
+    }
+
+    #[test]
+    fn emits_iifname_rule_only_when_ignore_interfaces_non_empty() {
+        let client = NftClient::new("/usr/sbin/nft", "rustban", true).unwrap();
+        let ignores = IgnoreList::from_strings(&[], true).unwrap();
+
+        let without_if = client
+            .build_init_script_with_interfaces(&ignores, &[])
+            .unwrap();
+        assert!(!without_if.contains("iifname"));
+
+        let with_if = client
+            .build_init_script_with_interfaces(&ignores, &["lo".into(), "wg0".into()])
+            .unwrap();
+        let if_pos = with_if
+            .find(r#"add rule inet rustban prerouting iifname { "lo", "wg0" } return"#)
+            .expect("missing iifname return rule");
+        let drop_pos = with_if
+            .find("ip saddr @banned_v4 drop")
+            .expect("missing drop rule");
+        assert!(if_pos < drop_pos);
+
+        let refresh = client.build_refresh_whitelists_script(&ignores);
+        assert!(refresh.contains("flush set inet rustban whitelist_v4"));
+        assert!(!refresh.contains("banned_v4"));
+        assert!(!refresh.contains("flush chain"));
     }
 }

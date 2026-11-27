@@ -10,7 +10,7 @@ use rustban::config::{
     parse_duration_nonzero, validate_comment_safe, Config, LogSourceKind, DEFAULT_NFT_BIN,
     DEFAULT_TABLE_NAME,
 };
-use rustban::daemon::run_daemon;
+use rustban::daemon::run_daemon_with_path;
 use rustban::ip::{is_unbannable_special, IgnoreList, IpKey};
 use rustban::matcher::{lint_fail_regexes, JailMatcher};
 use rustban::nft::NftClient;
@@ -196,7 +196,7 @@ fn execute(cli: Cli) -> Result<(), String> {
     match cli.command {
         Commands::Run { config, dry_run } => {
             let cfg = Config::from_file(&config)?;
-            run_daemon(&cfg, dry_run)
+            run_daemon_with_path(&config, &cfg, dry_run)
         }
         Commands::Status {
             config,
