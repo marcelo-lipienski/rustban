@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ env.RELEASE_TAG || github.ref }}
 
@@ -44,7 +44,7 @@ jobs:
           RUSTBAN_VERSION="${RELEASE_TAG#v}" ./scripts/security-check-docker.sh --out-dir dist/security
 
       - name: Upload security report artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: security-report
           path: |
@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ env.RELEASE_TAG || github.ref }}
 
@@ -118,7 +118,7 @@ jobs:
           ls -la "${STAGE}"
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-binary
           path: dist/release-assets/
@@ -128,7 +128,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ env.RELEASE_TAG || github.ref }}
 
@@ -137,7 +137,7 @@ jobs:
           RUSTBAN_VERSION="${RELEASE_TAG#v}" ./scripts/bench-docker.sh
 
       - name: Upload benchmark results artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-results
           path: |
@@ -150,24 +150,24 @@ jobs:
     needs: [security-check, build-binary, benchmarks]
     steps:
       - name: Checkout main branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
 
       - name: Download security report
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: security-report
           path: _artifacts/security
 
       - name: Download release binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-binary
           path: _artifacts/binary
 
       - name: Download benchmark results
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: benchmark-results
           path: _artifacts/benchmarks
@@ -284,7 +284,7 @@ jobs:
         run: rm -rf _artifacts
 
       - name: Open PR to update benchmarks & version on main
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: chore/release-sync-${{ env.RELEASE_TAG || github.run_id }}
