@@ -131,19 +131,19 @@ jobs:
           ref: main
 
       - name: Download security report
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: security-report
           path: _artifacts/security
 
       - name: Download release binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-binary
           path: _artifacts/binary
 
       - name: Download benchmark results
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: benchmark-results
           path: _artifacts/benchmarks
